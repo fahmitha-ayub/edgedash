@@ -7,14 +7,6 @@
 1. **GitHub Repository**: Push your code to GitHub
 2. **Supabase Account**: Create a free Postgres database at [supabase.com](https://supabase.com)
 3. **Gemini API Key** (optional): For natural language queries
-4. **Python Version**: The app requires Python 3.11 (specified in `.python-version` and `runtime.txt`)
-
-### Important: Python Version
-
-- The app is configured for **Python 3.11**
-- Streamlit Cloud will use this version automatically
-- `psycopg2-binary==2.9.9` is used for better wheel compatibility
-- If you see build errors, verify Python 3.11 is being used
 
 ### Step 1: Set up Supabase Database
 
