@@ -1,5 +1,5 @@
 """
-app.py — Job-seeker focused dashboard for EdgeDash.
+app.py — Read-only Streamlit dashboard for EdgeDash.
 
 Per rule 38: reads from the LAST PASSING CYCLE only (except the activity log).
 Per rule 49: Never writes. Never runs a cycle. Read-only access.
@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import streamlit as st
 
@@ -27,36 +27,57 @@ logger = logging.getLogger(__name__)
 def init_app():
     """Initialize app with robust error handling. Returns (success, error_message)."""
     try:
-        database_url = os.environ.get("DATABASE_URL")
-        if not database_url:
-            return (False, "Database not configured. Set DATABASE_URL environment variable.")
+        # Check DATABASE_URL
+        if not os.environ.get("DATABASE_URL"):
+            return False, "DATABASE_URL not configured. Please set it in Streamlit secrets."
         
-        from edgedash import storage
-        storage.configure("unused_for_postgres")
+        # Try to import and configure storage
+        try:
+            from edgedash import storage
+            from edgedash.config import load_config
+        except Exception as e:
+            logger.error(f"Import failed: {e}", exc_info=True)
+            return False, f"Failed to load application modules: {type(e).__name__}"
         
-        with storage._connection() as conn:
-            pass
+        # Try to configure storage
+        try:
+            config = load_config()
+            storage.configure(config.db_path)
+        except Exception as e:
+            logger.error(f"Configuration failed: {e}", exc_info=True)
+            return False, f"Configuration error: {type(e).__name__}"
         
-        return (True, None)
-    
+        # Test database connection
+        try:
+            with storage._connection() as conn:
+                pass  # Just test connection
+        except Exception as e:
+            logger.error(f"Database connection failed: {e}", exc_info=True)
+            return False, "Database connection failed. Check DATABASE_URL and network access."
+        
+        return True, None
+        
     except Exception as e:
-        logger.error(f"Initialization failed: {e}")
-        return (False, f"Database connection failed: {str(e)}")
+        logger.error(f"Unexpected init error: {e}", exc_info=True)
+        return False, f"Unexpected initialization error: {type(e).__name__}"
 
 
+# Initialize once
 _init_success, _init_error = init_app()
 
 if _init_success:
     from edgedash import storage
-    from edgedash.query import ask as query_module
+    from edgedash.config import load_config
+    from edgedash.query.ask import ask
 
 
 # ---------------------------------------------------------------------------
-# Safe data loaders
+# Safe data loading with fallbacks (rule 50)
 # ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=60)
 def safe_load_latest_passing_cycle():
+    """Get the last verified cycle metadata. Returns None on error."""
     if not _init_success:
         return None
     try:
@@ -68,6 +89,7 @@ def safe_load_latest_passing_cycle():
 
 @st.cache_data(ttl=60)
 def safe_load_recent_cycles(limit: int = 30):
+    """Get recent cycles for activity log. Returns empty list on error."""
     if not _init_success:
         return []
     try:
@@ -79,17 +101,11 @@ def safe_load_recent_cycles(limit: int = 30):
 
 @st.cache_data(ttl=60)
 def safe_load_top_scored_listings(limit: int = 10):
+    """Get top-scored listings. Returns empty list on error."""
     if not _init_success:
         return []
     try:
-        listings = storage.get_scored_listings(limit)
-        # Enrich with extracted facts
-        enriched = []
-        for listing in listings:
-            desc_hash = storage.make_listing_id(listing.get("source", ""), listing.get("url", ""))
-            facts = storage.get_extraction(desc_hash)
-            enriched.append({**listing, "facts": facts})
-        return enriched
+        return storage.get_scored_listings(limit)
     except Exception as e:
         logger.error(f"Failed to load scored listings: {e}")
         return []
@@ -97,6 +113,7 @@ def safe_load_top_scored_listings(limit: int = 10):
 
 @st.cache_data(ttl=60)
 def safe_load_latest_gaps():
+    """Get latest skill gaps. Returns empty list on error."""
     if not _init_success:
         return []
     try:
@@ -108,6 +125,7 @@ def safe_load_latest_gaps():
 
 @st.cache_data(ttl=60)
 def safe_load_total_counts():
+    """Get total listing counts. Returns zeros on error."""
     if not _init_success:
         return {"total": 0, "scored": 0}
     try:
@@ -129,499 +147,431 @@ def safe_load_total_counts():
 # ---------------------------------------------------------------------------
 
 def format_datetime(iso_str: str | None) -> str:
+    """Format ISO datetime to readable string."""
     if not iso_str:
         return "—"
     try:
+        # Handle both string (SQLite) and datetime object (Postgres)
         if isinstance(iso_str, str):
             dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
         elif hasattr(iso_str, 'strftime'):
+            # Already a datetime object
             dt = iso_str
         else:
             return str(iso_str)
-        return dt.strftime("%b %d, %Y")
+        
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
     except (ValueError, AttributeError, TypeError):
         return str(iso_str) if iso_str else "—"
 
 
-def days_ago(iso_str: str | None) -> str:
-    """Return 'X days ago' format."""
-    if not iso_str:
-        return "Unknown"
+def format_duration(started: str | None, finished: str | None) -> str:
+    """Calculate duration between two ISO timestamps."""
+    if not started or not finished:
+        return "—"
     try:
-        if isinstance(iso_str, str):
-            dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-        elif hasattr(iso_str, 'timestamp'):
-            dt = iso_str
+        # Handle both string (SQLite) and datetime object (Postgres)
+        if isinstance(started, str):
+            start_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+        elif hasattr(started, 'timestamp'):
+            start_dt = started
         else:
-            return "Unknown"
+            return "—"
         
-        now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
-        delta = now - dt
-        days = delta.days
-        
-        if days == 0:
-            return "Today"
-        elif days == 1:
-            return "Yesterday"
-        elif days < 7:
-            return f"{days} days ago"
-        elif days < 30:
-            return f"{days // 7} weeks ago"
+        if isinstance(finished, str):
+            end_dt = datetime.fromisoformat(finished.replace("Z", "+00:00"))
+        elif hasattr(finished, 'timestamp'):
+            end_dt = finished
         else:
-            return f"{days // 30} months ago"
-    except:
-        return "Unknown"
+            return "—"
+        
+        duration = (end_dt - start_dt).total_seconds()
+        if duration < 60:
+            return f"{duration:.1f}s"
+        return f"{duration / 60:.1f}m"
+    except (ValueError, AttributeError, TypeError):
+        return "—"
 
 
 def verdict_emoji(verdict: str | None) -> str:
+    """Return emoji for verdict status."""
     if verdict == "pass":
         return "✅"
-    elif verdict == "fail":
+    elif verdict in ("fail", "degraded"):
         return "❌"
-    elif verdict == "degraded":
-        return "⚠️"
-    else:
-        return "❓"
+    return "⚪"
 
 
 # ---------------------------------------------------------------------------
-# Main Dashboard Sections
+# Dashboard Sections (all wrapped for safety)
 # ---------------------------------------------------------------------------
 
 def render_header():
-    """Render hero section with status and next action."""
-    st.title("🎯 Your Career Intelligence Dashboard")
+    """Render header with last verified cycle status."""
+    st.title("EdgeDash — Career Intelligence Agent")
     
     try:
         passing_cycle = safe_load_latest_passing_cycle()
         counts = safe_load_total_counts()
+        all_cycles = safe_load_recent_cycles(limit=1)
         
         if not passing_cycle:
-            st.warning("⏳ Analyzing job market... First scan scheduled. Check back soon!")
+            st.warning("⚠️ No verified cycles yet. Waiting for first orchestrator run.")
             return
         
-        # Hero metrics
-        col1, col2, col3 = st.columns(3)
+        # Check if newest cycle is passing
+        newest_cycle = all_cycles[0] if all_cycles else None
+        is_stale = (
+            newest_cycle 
+            and newest_cycle.get("verdict") != "pass"
+            and newest_cycle.get("id") != passing_cycle.get("id")
+        )
+        
+        if is_stale:
+            st.error(
+                f"⚠️ **Latest cycle failed verification.** "
+                f"Data below is from an earlier verified cycle: "
+                f"{format_datetime(passing_cycle['finished_at'])}"
+            )
+        
+        # Metrics row
+        col1, col2, col3, col4 = st.columns(4)
         
         with col1:
             st.metric(
-                "🎯 Jobs Analyzed",
-                counts["scored"],
-                f"from {counts['total']} listings"
+                "Last Verified Cycle",
+                format_datetime(passing_cycle.get("finished_at")),
             )
         
         with col2:
-            last_update = format_datetime(passing_cycle.get("finished_at"))
-            st.metric("🔄 Last Updated", last_update)
+            st.metric("Total Listings", counts["total"])
         
         with col3:
-            verdict = passing_cycle.get("verdict", "")
-            if verdict == "pass":
-                st.metric("📊 System Health", "Healthy", delta="✓")
-            else:
-                st.metric("📊 System Health", "Degraded", delta="!")
+            st.metric("Scored Listings", counts["scored"])
+        
+        with col4:
+            verdict_status = "✅ PASS" if passing_cycle.get("verdict") == "pass" else "❌ FAIL"
+            st.metric("Current Status", verdict_status)
         
         st.divider()
     
     except Exception as e:
         logger.error(f"Header render failed: {e}")
-        st.error("Unable to load status")
+        st.error("Unable to load cycle status")
 
 
-def render_best_matches():
-    """Show top job opportunities with actionable insights."""
-    st.header("💼 Your Best Job Matches")
-    st.caption("Top opportunities ranked by fit score — focus your energy here")
+def render_activity_log():
+    """Render recent cycle activity log (main panel)."""
+    st.header("🔄 Agent Activity Log")
+    st.caption("What the agent has been doing across its recent runs")
+
+    try:
+        cycles = safe_load_recent_cycles(limit=30)
+
+        if not cycles:
+            st.info("💤 No cycles recorded yet. Run the orchestrator to populate data.")
+            return
+
+        # ---- Quick-scan summary, up top where job seekers will actually see it ----
+        pass_count = sum(1 for c in cycles if c.get("verdict") == "pass")
+        fail_count = sum(1 for c in cycles if c.get("verdict") == "fail")
+        degraded_count = sum(1 for c in cycles if c.get("verdict") == "degraded")
+        success_rate = (pass_count / len(cycles) * 100) if cycles else 0
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("✅ Passed", pass_count)
+        m2.metric("❌ Failed", fail_count)
+        m3.metric("⚠️ Degraded", degraded_count)
+        m4.metric("Success Rate", f"{success_rate:.0f}%")
+
+        st.caption(f"Showing the {len(cycles)} most recent cycles, newest first")
+
+        # ---- Build compact table data (same parsing as before) ----
+        rows = []
+        for cycle in cycles:
+            verdict = cycle.get("verdict", "unknown")
+            status_icon = verdict_emoji(verdict)
+
+            duration = format_duration(cycle.get("started_at"), cycle.get("finished_at"))
+
+            notes = cycle.get("notes", "")
+            agents_run = []
+            agents_skipped = []
+
+            if notes:
+                if "fetcher" in notes.lower():
+                    if "skip" in notes.lower() and "fetcher" in notes.lower():
+                        agents_skipped.append("fetcher")
+                    else:
+                        agents_run.append("fetcher")
+                if "scorer" in notes.lower():
+                    if "skip" in notes.lower() and "scorer" in notes.lower():
+                        agents_skipped.append("scorer")
+                    else:
+                        agents_run.append("scorer")
+                if "gap_analyzer" in notes.lower() or "gap" in notes.lower():
+                    if "skip" in notes.lower():
+                        agents_skipped.append("gaps")
+                    else:
+                        agents_run.append("gaps")
+
+            summary = " + ".join(agents_run) if agents_run else "—"
+            if agents_skipped:
+                summary += f" (⏭ {', '.join(agents_skipped)})"
+
+            failed_reason = "—"
+            if verdict != "pass":
+                failed_checks = cycle.get("failed_checks", "")
+                if failed_checks:
+                    if "," in failed_checks:
+                        failed_reason = failed_checks.split(",")[0].strip()
+                    else:
+                        failed_reason = failed_checks
+
+            rows.append({
+                "": status_icon,
+                "Time": format_datetime(cycle.get("started_at")),
+                "Agents": summary,
+                "Verdict": verdict.upper() if verdict else "—",
+                "Failure": failed_reason,
+                "Duration": duration,
+            })
+
+        import pandas as pd
+        df = pd.DataFrame(rows)
+
+        def highlight_verdict(row):
+            if row["Verdict"] == "PASS":
+                return ['background-color: #d4edda'] * len(row)
+            elif row["Verdict"] == "FAIL":
+                return ['background-color: #f8d7da'] * len(row)
+            elif row["Verdict"] == "DEGRADED":
+                return ['background-color: #fff3cd'] * len(row)
+            else:
+                return [''] * len(row)
+
+        styled_df = df.style.apply(highlight_verdict, axis=1)
+
+        st.dataframe(
+            styled_df,
+            use_container_width=True,
+            height=min(400 + (len(cycles) * 10), 650),
+            hide_index=True,
+            column_config={
+                "": st.column_config.TextColumn(width="small"),
+                "Time": st.column_config.TextColumn(width="medium"),
+                "Agents": st.column_config.TextColumn(width="large"),
+                "Verdict": st.column_config.TextColumn(width="small"),
+                "Failure": st.column_config.TextColumn(width="medium"),
+                "Duration": st.column_config.TextColumn(width="small"),
+            }
+        )
+
+        # ---- Optional trend view, tucked away so it doesn't clutter the table ----
+        with st.expander("📈 See verdict trend across these cycles"):
+            trend_df = pd.DataFrame({
+                "Cycle (oldest → newest)": list(range(1, len(cycles) + 1)),
+                "Passed": [1 if c.get("verdict") == "pass" else 0 for c in reversed(cycles)],
+            })
+            st.bar_chart(trend_df.set_index("Cycle (oldest → newest)"), height=180)
+            st.caption("Bar height of 1 = pass, 0 = fail/degraded.")
+
+    except Exception as e:
+        logger.error(f"Activity log render failed: {e}")
+        st.error("Unable to load activity log")
+
+
+def render_ask_section():
+    """Render natural language query section (rules 42-45)."""
+    st.header("💬 Ask Your Data")
+    st.caption("Ask questions about job listings in plain English")
+    
+    try:
+        if not _init_success:
+            st.warning("Database not configured. Cannot answer questions.")
+            return
+        
+        config = load_config()
+        
+        # Example questions as clickable buttons
+        st.write("**Try these examples:**")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("Which companies are hiring?", use_container_width=True):
+                st.session_state["query"] = "Which companies are hiring?"
+        
+        with col2:
+            if st.button("Show me top 5 matches", use_container_width=True):
+                st.session_state["query"] = "Show me top 5 matches"
+        
+        with col3:
+            if st.button("What skills should I learn?", use_container_width=True):
+                st.session_state["query"] = "What skills should I learn?"
+        
+        # Text input
+        question = st.text_input(
+            "Or ask your own question:",
+            value=st.session_state.get("query", ""),
+            placeholder="e.g., Which companies posted jobs in the last 3 days?",
+            key="question_input",
+        )
+        
+        # Clear session state after displaying
+        if "query" in st.session_state:
+            del st.session_state["query"]
+        
+        if question:
+            with st.spinner("Thinking..."):
+                try:
+                    answer = ask(question, config)
+                    
+                    # Display answer
+                    st.markdown("### Answer")
+                    st.write(answer.text)
+                    
+                    # Display metadata
+                    if answer.tool_used:
+                        st.caption(f"📊 Tool used: `{answer.tool_used}` with params: `{answer.params}`")
+                    
+                    # Display underlying data
+                    if answer.rows:
+                        st.markdown("### Underlying Data")
+                        st.dataframe(answer.rows, use_container_width=True, hide_index=True)
+                        st.caption(f"{len(answer.rows)} rows returned")
+                    
+                except Exception as e:
+                    logger.error(f"Query failed: {e}")
+                    st.error("Unable to answer question. Please try again later.")
+    
+    except Exception as e:
+        logger.error(f"Ask section render failed: {e}")
+        st.error("Unable to load query interface")
+
+
+def render_top_listings():
+    """Render top scored listings (compact panel)."""
+    st.subheader("Top 10 Scored Listings")
     
     try:
         listings = safe_load_top_scored_listings(limit=10)
         
         if not listings:
-            st.info("No analyzed jobs yet. The system will find matches on the next scan.")
+            st.info("No scored listings yet.")
             return
         
-        for listing in listings:
-            score = listing.get("fit_score", 0)
-            match_pct = min(100, score)  # Cap at 100%
+        rows = []
+        for listing in listings[:10]:
+            reason = listing.get("fit_reason", "")
+            if len(reason) > 60:
+                reason = reason[:57] + "..."
             
-            # Color-coded match indicator
-            if match_pct >= 80:
-                match_color = "#28a745"  # Green
-                match_label = "🎯 Excellent Match"
-            elif match_pct >= 60:
-                match_color = "#ffc107"  # Yellow
-                match_label = "⭐ Good Match"
-            else:
-                match_color = "#6c757d"  # Gray
-                match_label = "💡 Consider"
-            
-            with st.container():
-                # Header row
-                col1, col2 = st.columns([3, 1])
-                
-                with col1:
-                    st.markdown(f"### {listing.get('title', 'Untitled')} at {listing.get('company', 'Unknown')}")
-                
-                with col2:
-                    st.markdown(
-                        f"<div style='text-align: right; font-size: 24px; font-weight: bold; color: {match_color};'>"
-                        f"{match_pct}% {match_label}</div>",
-                        unsafe_allow_html=True
-                    )
-                
-                # Details row
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.write(f"📍 **Location:** {listing.get('location', 'Not specified')}")
-                
-                with col2:
-                    posted = days_ago(listing.get('posted_at'))
-                    st.write(f"📅 **Posted:** {posted}")
-                
-                with col3:
-                    st.write(f"🏢 **Source:** {listing.get('source', 'Unknown')}")
-                
-                # Why it matches
-                reason = listing.get('fit_reason', '')
-                if reason:
-                    # Extract first part before "|" (the human-readable reason)
-                    if "|" in reason:
-                        display_reason = reason.split("|")[0].strip()
-                    else:
-                        display_reason = reason
-                    st.write(f"**Why this matches:** {display_reason}")
-                
-                # Skills analysis
-                facts = listing.get('facts', {})
-                if facts:
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        required = facts.get('required_skills', [])
-                        if required:
-                            st.write("✅ **Required skills:**")
-                            st.write(", ".join(required[:5]))  # Show first 5
-                    
-                    with col2:
-                        nice_to_have = facts.get('nice_to_have', [])
-                        if nice_to_have:
-                            st.write("💎 **Nice to have:**")
-                            st.write(", ".join(nice_to_have[:5]))
-                
-                # Action buttons
-                col1, col2, col3, col4 = st.columns([1, 1, 1, 3])
-                
-                with col1:
-                    url = listing.get('url', '')
-                    if url:
-                        st.link_button("🔗 View Job", url, use_container_width=True)
-                
-                with col2:
-                    if url:
-                        st.link_button("📤 Apply", url, use_container_width=True)
-                
-                st.markdown("---")
+            rows.append({
+                "Score": listing.get("fit_score", 0),
+                "Title": listing.get("title", ""),
+                "Company": listing.get("company", ""),
+                "Reason": reason,
+            })
         
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    
     except Exception as e:
-        logger.error(f"Best matches render failed: {e}")
-        st.error("Unable to load job matches")
+        logger.error(f"Top listings render failed: {e}")
+        st.error("Unable to load top listings")
 
 
-def render_skill_recommendations():
-    """Show skill gaps as career development recommendations."""
-    st.header("🎓 Skills to Focus On")
-    st.caption("Learn these skills to unlock more opportunities")
+def render_skill_gaps():
+    """Render current top skill gaps (compact panel)."""
+    st.subheader("Top 10 Skill Gaps")
     
     try:
         gaps = safe_load_latest_gaps()
         
         if not gaps:
-            st.info("No skill analysis yet. Run a cycle to see recommendations.")
+            st.info("No skill gap analysis yet.")
             return
         
-        # Show top 10 gaps
-        for i, gap in enumerate(gaps[:10], 1):
-            skill = gap.get('skill', 'Unknown')
-            cost = gap.get('opportunity_cost', 0)
-            blocked_count = gap.get('listings_blocked', 0)
-            
-            # Priority level
-            if cost >= 50:
-                priority = "🔥 High Priority"
-                priority_color = "#dc3545"
-            elif cost >= 30:
-                priority = "⚡ Medium Priority"
-                priority_color = "#ffc107"
-            else:
-                priority = "💡 Nice to Have"
-                priority_color = "#6c757d"
-            
-            with st.container():
-                col1, col2 = st.columns([3, 1])
-                
-                with col1:
-                    st.markdown(f"### {i}. {skill.title()}")
-                
-                with col2:
-                    st.markdown(
-                        f"<div style='text-align: right; font-size: 18px; font-weight: bold; color: {priority_color};'>"
-                        f"{priority}</div>",
-                        unsafe_allow_html=True
-                    )
-                
-                # Impact metrics
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.metric("🎯 Jobs Requiring This", blocked_count)
-                
-                with col2:
-                    st.metric("💰 Impact Score", f"{cost:.0f}/100")
-                
-                # Why it matters
-                if blocked_count > 0:
-                    st.write(f"**Why learn this:** {blocked_count} job{'s' if blocked_count != 1 else ''} in your match list require{'' if blocked_count != 1 else 's'} this skill. Adding it could significantly boost your match scores.")
-                
-                st.markdown("---")
-        
-    except Exception as e:
-        logger.error(f"Skill recommendations render failed: {e}")
-        st.error("Unable to load skill recommendations")
-
-
-def render_next_steps():
-    """Show clear action plan."""
-    st.header("✨ What Should I Do Next?")
-    
-    try:
-        listings = safe_load_top_scored_listings(limit=3)
-        gaps = safe_load_latest_gaps()
-        
-        if listings:
-            st.subheader("🎯 Immediate Actions")
-            st.write("**Apply to these top matches today:**")
-            for i, job in enumerate(listings[:3], 1):
-                title = job.get('title', 'Untitled')
-                company = job.get('company', 'Unknown')
-                score = job.get('fit_score', 0)
-                url = job.get('url', '')
-                st.write(f"{i}. [{title} at {company}]({url}) — {score}% match")
-        
-        if gaps:
-            st.subheader("📚 This Week")
-            top_gap = gaps[0]
-            skill = top_gap.get('skill', 'Unknown')
-            blocked = top_gap.get('listings_blocked', 0)
-            st.write(f"**Start learning {skill.title()}** — it's required for {blocked} jobs in your matches.")
-        
-        st.subheader("📅 Coming Up")
-        st.write("• Next job scan: Daily at 6:00 AM IST")
-        st.write("• Check back daily for new matches")
-        st.write("• Update your profile in config.yaml to refine matches")
-        
-    except Exception as e:
-        logger.error(f"Next steps render failed: {e}")
-        st.error("Unable to load action plan")
-
-
-def render_ask_your_data():
-    """Interactive Q&A about your job search data."""
-    st.header("💬 Ask Your Data")
-    st.caption("Ask questions about your job search in plain English")
-    
-    try:
-        # Example questions as buttons
-        st.write("**Try asking:**")
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            if st.button("Which companies are hiring?", key="q1"):
-                st.session_state.question = "Which companies are hiring?"
-        
-        with col2:
-            if st.button("What are my top 5 matches?", key="q2"):
-                st.session_state.question = "What are my top 5 matches?"
-        
-        with col3:
-            if st.button("What skills should I learn?", key="q3"):
-                st.session_state.question = "What skills should I learn?"
-        
-        # Question input
-        question = st.text_input(
-            "Your question:",
-            value=st.session_state.get("question", ""),
-            placeholder="e.g., How many Python jobs are there?",
-            key="user_question"
-        )
-        
-        if question:
-            with st.spinner("Thinking..."):
-                try:
-                    answer = query_module.ask(question)
-                    
-                    # Display answer
-                    st.write("**Answer:**")
-                    st.write(answer.text)
-                    
-                    # Display underlying data
-                    if answer.rows:
-                        with st.expander("📊 See the data"):
-                            st.dataframe(answer.rows, use_container_width=True)
-                
-                except Exception as e:
-                    logger.error(f"Query failed: {e}")
-                    st.error(f"Sorry, I couldn't answer that. Error: {e}")
-    
-    except Exception as e:
-        logger.error(f"Ask section render failed: {e}")
-        st.error("Q&A temporarily unavailable")
-
-
-def render_system_health():
-    """Show agent health in human terms."""
-    st.header("🔧 System Health")
-    
-    try:
-        cycles = safe_load_recent_cycles(limit=30)
-        
-        if not cycles:
-            st.info("No activity yet.")
-            return
-        
-        st.caption(f"Last {len(cycles)} job scans")
-        
-        # Health summary
-        pass_count = sum(1 for c in cycles if c.get("verdict") == "pass")
-        success_rate = (pass_count / len(cycles) * 100) if cycles else 0
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("✅ Successful", pass_count)
-        with col2:
-            fail_count = sum(1 for c in cycles if c.get("verdict") == "fail")
-            st.metric("❌ Failed", fail_count)
-        with col3:
-            degraded_count = sum(1 for c in cycles if c.get("verdict") == "degraded")
-            st.metric("⚠️ Partial", degraded_count)
-        with col4:
-            st.metric("📊 Success Rate", f"{success_rate:.0f}%")
-        
-        # Activity log
         rows = []
-        for cycle in cycles:
-            verdict = cycle.get("verdict", "unknown")
-            
-            # Translate technical notes to human language
-            notes = cycle.get("notes", "")
-            summary = ""
-            
-            if "fetcher" in notes.lower():
-                if "skip" not in notes.lower():
-                    summary = "✓ Scanned job boards"
-                else:
-                    summary = "⏭ Skipped scan (recent data)"
-            
-            if "scorer" in notes.lower():
-                if "skip" not in notes.lower():
-                    if summary:
-                        summary += " • ✓ Analyzed matches"
-                    else:
-                        summary = "✓ Analyzed matches"
-                else:
-                    if summary:
-                        summary += " • ⏭ No new jobs to score"
-            
-            if "gap" in notes.lower():
-                if "skip" not in notes.lower():
-                    if summary:
-                        summary += " • ✓ Updated skill recommendations"
-                    else:
-                        summary = "✓ Updated skill recommendations"
-            
-            # Extract failure reason if any
-            failure = ""
-            if verdict != "pass":
-                if "gap_sample_size" in notes:
-                    failure = "Not enough data to verify"
-                elif "spread" in notes:
-                    failure = "Score distribution issue"
-                elif "freshness" in notes:
-                    failure = "Data too old"
-                else:
-                    failure = "Quality check failed"
-            
-            # Status with color
-            if verdict == "pass":
-                status = f'<span style="color: #28a745; font-weight: bold;">✅ Success</span>'
-            elif verdict == "fail":
-                status = f'<span style="color: #dc3545; font-weight: bold;">❌ Failed</span>'
-            elif verdict == "degraded":
-                status = f'<span style="color: #ffc107; font-weight: bold;">⚠️ Partial</span>'
-            else:
-                status = f'<span style="color: #6c757d;">❓ Unknown</span>'
-            
+        for gap in gaps[:10]:
             rows.append({
-                "Time": format_datetime(cycle.get("started_at")),
-                "Status": status,
-                "What Happened": summary if summary else "—",
-                "Issue": failure if failure else "—",
+                "Skill": gap.get("skill", ""),
+                "Listings Blocked": gap.get("listings_blocked", 0),
+                "Opportunity Cost": f"{gap.get('opportunity_cost', 0):.2f}",
+                "Mean Score": f"{gap.get('mean_score', 0):.1f}",
+                "Top Score": gap.get("top_score", 0),
             })
         
-        # Display as HTML for colored status
-        import pandas as pd
-        df = pd.DataFrame(rows)
-        
-        st.markdown(
-            df.to_html(escape=False, index=False),
-            unsafe_allow_html=True
-        )
-        
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    
     except Exception as e:
-        logger.error(f"System health render failed: {e}")
-        st.error("Unable to load system health")
+        logger.error(f"Skill gaps render failed: {e}")
+        st.error("Unable to load skill gaps")
 
 
 def render_footer():
-    """Footer with last update and repo link."""
-    st.divider()
+    """Render footer with last cycle timestamp and GitHub link."""
     try:
-        passing_cycle = safe_load_latest_passing_cycle()
-        if passing_cycle:
-            last_update = format_datetime(passing_cycle.get("finished_at"))
-            st.caption(f"Last verified update: {last_update} • [EdgeDash on GitHub](https://github.com/yourusername/edgedash)")
-        else:
-            st.caption("[EdgeDash on GitHub](https://github.com/yourusername/edgedash)")
+        st.divider()
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            passing_cycle = safe_load_latest_passing_cycle()
+            if passing_cycle:
+                timestamp = format_datetime(passing_cycle.get("finished_at"))
+                st.caption(f"Last successful cycle: {timestamp}")
+            else:
+                st.caption("Waiting for first cycle...")
+        
+        with col2:
+            st.caption("🔗 [GitHub Repository](https://github.com/yourusername/edgedash)")
+    
     except Exception as e:
         logger.error(f"Footer render failed: {e}")
-        st.caption("[EdgeDash on GitHub](https://github.com/yourusername/edgedash)")
 
 
 # ---------------------------------------------------------------------------
-# Main App
+# Main
 # ---------------------------------------------------------------------------
 
 def main():
     st.set_page_config(
-        page_title="EdgeDash — Career Intelligence",
-        page_icon="🎯",
+        page_title="EdgeDash",
+        page_icon="📊",
         layout="wide",
-        initial_sidebar_state="collapsed",
     )
     
-    # Check init status
+    # Check initialization
     if not _init_success:
-        st.error(f"⚠️ System Error: {_init_error}")
+        st.error(f"⚠️ Application initialization failed")
+        st.write(_init_error)
+        st.info(
+            "**Required configuration:**\n\n"
+            "Set the following in Streamlit secrets:\n"
+            "- `DATABASE_URL`: Postgres connection string\n"
+            "- `GEMINI_API_KEY`: Google Gemini API key (optional, for queries)"
+        )
         st.stop()
     
-    # Render dashboard sections in order
+    # Render sections (each wrapped for safety)
     render_header()
-    render_next_steps()
-    render_best_matches()
-    render_skill_recommendations()
-    render_ask_your_data()
-    render_system_health()
+    render_activity_log()
+    
+    st.divider()
+    
+    render_ask_section()
+    
+    st.divider()
+    
+    # Bottom row: two columns
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        render_top_listings()
+    
+    with col2:
+        render_skill_gaps()
+    
     render_footer()
 
 
