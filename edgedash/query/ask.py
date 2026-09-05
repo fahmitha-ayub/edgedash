@@ -262,32 +262,47 @@ def _log_query(
 ) -> None:
     """Log every question to query_log table."""
     with storage._connection() as conn:
-        # Ensure table exists
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS query_log (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                asked_at    TEXT NOT NULL,
-                question    TEXT NOT NULL,
-                tool        TEXT,
-                params      TEXT,
-                answerable  INTEGER NOT NULL,
-                duration_ms INTEGER NOT NULL,
-                error       TEXT
-            )
-        """)
+        # Ensure table exists (for both SQLite and Postgres)
+        if storage._backend == "postgres":
+            storage._execute(conn, """
+                CREATE TABLE IF NOT EXISTS query_log (
+                    id          SERIAL PRIMARY KEY,
+                    asked_at    TIMESTAMP NOT NULL,
+                    question    TEXT NOT NULL,
+                    tool        TEXT,
+                    params      TEXT,
+                    answerable  INTEGER NOT NULL,
+                    duration_ms INTEGER NOT NULL,
+                    error       TEXT
+                )
+            """)
+        else:
+            storage._execute(conn, """
+                CREATE TABLE IF NOT EXISTS query_log (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    asked_at    TEXT NOT NULL,
+                    question    TEXT NOT NULL,
+                    tool        TEXT,
+                    params      TEXT,
+                    answerable  INTEGER NOT NULL,
+                    duration_ms INTEGER NOT NULL,
+                    error       TEXT
+                )
+            """)
         
-        conn.execute(
+        storage._execute(
+            conn,
             """
             INSERT INTO query_log (asked_at, question, tool, params, answerable, duration_ms, error)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (:asked_at, :question, :tool, :params, :answerable, :duration_ms, :error)
             """,
-            (
-                storage.utc_now(),
-                question,
-                tool,
-                json.dumps(params),
-                1 if answerable else 0,
-                int(duration * 1000),
-                error,
-            ),
+            {
+                "asked_at": storage.utc_now(),
+                "question": question,
+                "tool": tool,
+                "params": json.dumps(params),
+                "answerable": 1 if answerable else 0,
+                "duration_ms": int(duration * 1000),
+                "error": error,
+            },
         )
