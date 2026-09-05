@@ -263,7 +263,7 @@ def _log_query(
     """Log every question to query_log table."""
     with storage._connection() as conn:
         # Ensure table exists
-        conn.execute("""
+        storage.execute("""
             CREATE TABLE IF NOT EXISTS query_log (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 asked_at    TEXT NOT NULL,
@@ -276,7 +276,7 @@ def _log_query(
             )
         """)
         
-        conn.execute(
+        storage.execute(
             """
             INSERT INTO query_log (asked_at, question, tool, params, answerable, duration_ms, error)
             VALUES (?, ?, ?, ?, ?, ?, ?)

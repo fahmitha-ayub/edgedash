@@ -260,6 +260,131 @@ def render_header():
         st.error("Unable to load cycle status")
 
 
+def render_top_listings():
+    """Render top scored listings (compact panel)."""
+    st.subheader("Top 10 Scored Listings")
+    
+    try:
+        listings = safe_load_top_scored_listings(limit=10)
+        
+        if not listings:
+            st.info("No scored listings yet.")
+            return
+        
+        rows = []
+        for listing in listings[:10]:
+            reason = listing.get("fit_reason", "")
+            if len(reason) > 60:
+                reason = reason[:57] + "..."
+            
+            rows.append({
+                "Score": listing.get("fit_score", 0),
+                "Title": listing.get("title", ""),
+                "Company": listing.get("company", ""),
+                "Reason": reason,
+            })
+        
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    
+    except Exception as e:
+        logger.error(f"Top listings render failed: {e}")
+        st.error("Unable to load top listings")
+
+
+def render_skill_gaps():
+    """Render current top skill gaps (compact panel)."""
+    st.subheader("Top 10 Skill Gaps")
+    
+    try:
+        gaps = safe_load_latest_gaps()
+        
+        if not gaps:
+            st.info("No skill gap analysis yet.")
+            return
+        
+        rows = []
+        for gap in gaps[:10]:
+            rows.append({
+                "Skill": gap.get("skill", ""),
+                "Listings Blocked": gap.get("listings_blocked", 0),
+                "Opportunity Cost": f"{gap.get('opportunity_cost', 0):.2f}",
+                "Mean Score": f"{gap.get('mean_score', 0):.1f}",
+                "Top Score": gap.get("top_score", 0),
+            })
+        
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    
+    except Exception as e:
+        logger.error(f"Skill gaps render failed: {e}")
+        st.error("Unable to load skill gaps")
+
+def render_ask_section():
+    """Render natural language query section (rules 42-45)."""
+    st.header("💬 Ask Your Data")
+    st.caption("Ask questions about job listings in plain English")
+    
+    try:
+        if not _init_success:
+            st.warning("Database not configured. Cannot answer questions.")
+            return
+        
+        config = load_config()
+        
+        # Example questions as clickable buttons
+        st.write("**Try these examples:**")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("Which companies are hiring?", use_container_width=True):
+                st.session_state["query"] = "Which companies are hiring?"
+        
+        with col2:
+            if st.button("Show me top 5 matches", use_container_width=True):
+                st.session_state["query"] = "Show me top 5 matches"
+        
+        with col3:
+            if st.button("What skills should I learn?", use_container_width=True):
+                st.session_state["query"] = "What skills should I learn?"
+        
+        # Text input
+        question = st.text_input(
+            "Or ask your own question:",
+            value=st.session_state.get("query", ""),
+            placeholder="e.g., Which companies posted jobs in the last 3 days?",
+            key="question_input",
+        )
+        
+        # Clear session state after displaying
+        if "query" in st.session_state:
+            del st.session_state["query"]
+        
+        if question:
+            with st.spinner("Thinking..."):
+                try:
+                    answer = ask(question, config)
+                    
+                    # Display answer
+                    st.markdown("### Answer")
+                    st.write(answer.text)
+                    
+                    # Display metadata
+                    if answer.tool_used:
+                        st.caption(f"📊 Tool used: `{answer.tool_used}` with params: `{answer.params}`")
+                    
+                    # Display underlying data
+                    if answer.rows:
+                        st.markdown("### Underlying Data")
+                        st.dataframe(answer.rows, use_container_width=True, hide_index=True)
+                        st.caption(f"{len(answer.rows)} rows returned")
+                    
+                except Exception as e:
+                    logger.error(f"Query failed: {e}")
+                    st.error("Unable to answer question. Please try again later.")
+    
+    except Exception as e:
+        logger.error(f"Ask section render failed: {e}")
+        st.error("Unable to load query interface")
+
 def render_activity_log():
     """Render recent cycle activity log (main panel)."""
     st.header("🔄 Agent Activity Log")
@@ -342,11 +467,11 @@ def render_activity_log():
 
         def highlight_verdict(row):
             if row["Verdict"] == "PASS":
-                return ['background-color: #d4edda'] * len(row)
+                return ['background-color: #000000'] * len(row)
             elif row["Verdict"] == "FAIL":
-                return ['background-color: #f8d7da'] * len(row)
+                return ['background-color: #000000'] * len(row)
             elif row["Verdict"] == "DEGRADED":
-                return ['background-color: #fff3cd'] * len(row)
+                return ['background-color: #000000'] * len(row)
             else:
                 return [''] * len(row)
 
@@ -381,133 +506,6 @@ def render_activity_log():
         st.error("Unable to load activity log")
 
 
-def render_ask_section():
-    """Render natural language query section (rules 42-45)."""
-    st.header("💬 Ask Your Data")
-    st.caption("Ask questions about job listings in plain English")
-    
-    try:
-        if not _init_success:
-            st.warning("Database not configured. Cannot answer questions.")
-            return
-        
-        config = load_config()
-        
-        # Example questions as clickable buttons
-        st.write("**Try these examples:**")
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            if st.button("Which companies are hiring?", use_container_width=True):
-                st.session_state["query"] = "Which companies are hiring?"
-        
-        with col2:
-            if st.button("Show me top 5 matches", use_container_width=True):
-                st.session_state["query"] = "Show me top 5 matches"
-        
-        with col3:
-            if st.button("What skills should I learn?", use_container_width=True):
-                st.session_state["query"] = "What skills should I learn?"
-        
-        # Text input
-        question = st.text_input(
-            "Or ask your own question:",
-            value=st.session_state.get("query", ""),
-            placeholder="e.g., Which companies posted jobs in the last 3 days?",
-            key="question_input",
-        )
-        
-        # Clear session state after displaying
-        if "query" in st.session_state:
-            del st.session_state["query"]
-        
-        if question:
-            with st.spinner("Thinking..."):
-                try:
-                    answer = ask(question, config)
-                    
-                    # Display answer
-                    st.markdown("### Answer")
-                    st.write(answer.text)
-                    
-                    # Display metadata
-                    if answer.tool_used:
-                        st.caption(f"📊 Tool used: `{answer.tool_used}` with params: `{answer.params}`")
-                    
-                    # Display underlying data
-                    if answer.rows:
-                        st.markdown("### Underlying Data")
-                        st.dataframe(answer.rows, use_container_width=True, hide_index=True)
-                        st.caption(f"{len(answer.rows)} rows returned")
-                    
-                except Exception as e:
-                    logger.error(f"Query failed: {e}")
-                    st.error("Unable to answer question. Please try again later.")
-    
-    except Exception as e:
-        logger.error(f"Ask section render failed: {e}")
-        st.error("Unable to load query interface")
-
-
-def render_top_listings():
-    """Render top scored listings (compact panel)."""
-    st.subheader("Top 10 Scored Listings")
-    
-    try:
-        listings = safe_load_top_scored_listings(limit=10)
-        
-        if not listings:
-            st.info("No scored listings yet.")
-            return
-        
-        rows = []
-        for listing in listings[:10]:
-            reason = listing.get("fit_reason", "")
-            if len(reason) > 60:
-                reason = reason[:57] + "..."
-            
-            rows.append({
-                "Score": listing.get("fit_score", 0),
-                "Title": listing.get("title", ""),
-                "Company": listing.get("company", ""),
-                "Reason": reason,
-            })
-        
-        st.dataframe(rows, use_container_width=True, hide_index=True)
-    
-    except Exception as e:
-        logger.error(f"Top listings render failed: {e}")
-        st.error("Unable to load top listings")
-
-
-def render_skill_gaps():
-    """Render current top skill gaps (compact panel)."""
-    st.subheader("Top 10 Skill Gaps")
-    
-    try:
-        gaps = safe_load_latest_gaps()
-        
-        if not gaps:
-            st.info("No skill gap analysis yet.")
-            return
-        
-        rows = []
-        for gap in gaps[:10]:
-            rows.append({
-                "Skill": gap.get("skill", ""),
-                "Listings Blocked": gap.get("listings_blocked", 0),
-                "Opportunity Cost": f"{gap.get('opportunity_cost', 0):.2f}",
-                "Mean Score": f"{gap.get('mean_score', 0):.1f}",
-                "Top Score": gap.get("top_score", 0),
-            })
-        
-        st.dataframe(rows, use_container_width=True, hide_index=True)
-    
-    except Exception as e:
-        logger.error(f"Skill gaps render failed: {e}")
-        st.error("Unable to load skill gaps")
-
-
 def render_footer():
     """Render footer with last cycle timestamp and GitHub link."""
     try:
@@ -516,12 +514,7 @@ def render_footer():
         col1, col2 = st.columns([2, 1])
         
         with col1:
-            passing_cycle = safe_load_latest_passing_cycle()
-            if passing_cycle:
-                timestamp = format_datetime(passing_cycle.get("finished_at"))
-                st.caption(f"Last successful cycle: {timestamp}")
-            else:
-                st.caption("Waiting for first cycle...")
+            st.caption("by Rehours")
         
         with col2:
             st.caption("🔗 [GitHub Repository](https://github.com/yourusername/edgedash)")
@@ -555,15 +548,7 @@ def main():
     
     # Render sections (each wrapped for safety)
     render_header()
-    render_activity_log()
-    
-    st.divider()
-    
-    render_ask_section()
-    
-    st.divider()
-    
-    # Bottom row: two columns
+
     col1, col2 = st.columns(2)
     
     with col1:
@@ -571,6 +556,15 @@ def main():
     
     with col2:
         render_skill_gaps()
+    
+    
+    st.divider()
+    
+    render_ask_section()
+    
+    st.divider()
+    
+    render_activity_log()
     
     render_footer()
 
