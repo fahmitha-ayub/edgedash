@@ -1,0 +1,56 @@
+name: EdgeDash Orchestrator Cycle
+
+# Schedule: Daily at 06:00 IST (India Standard Time)
+# UTC equivalent: 00:30 (midnight thirty)
+# IST = UTC+5:30, so 06:00 IST = 00:30 UTC
+on:
+  schedule:
+    - cron: '30 0 * * *'  # 00:30 UTC = 06:00 IST daily
+  
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  run-cycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10  # Hard timeout per rule 51
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'  # Cache pip dependencies
+      
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run database migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          echo "Running migrations (safe to repeat)..."
+          python -m edgedash.storage --migrate
+      
+      - name: Run orchestrator cycle
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          echo "Starting orchestrator cycle..."
+          python run_cycle.py
+      
+      - name: Upload cycle log
+        if: always()  # Upload even if cycle fails
+        uses: actions/upload-artifact@v4
+        with:
+          name: cycle-log-${{ github.run_number }}
+          path: |
+            cycle_*.log
+            *.log
+          retention-days: 30
+          if-no-files-found: warn
