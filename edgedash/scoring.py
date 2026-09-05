@@ -137,16 +137,27 @@ def build_reason(components: dict, facts: dict, config: Any, listing: dict) -> s
     posted_at = listing.get("posted_at")
     if posted_at:
         try:
-            posted = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
-            now = datetime.now(timezone.utc)
-            age_days = (now - posted).days
-            if age_days == 0:
-                parts.append("posted today")
-            elif age_days == 1:
-                parts.append("posted 1d ago")
+            # Handle both string (SQLite) and datetime object (Postgres)
+            if isinstance(posted_at, str):
+                posted = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
+            elif hasattr(posted_at, 'tzinfo'):
+                posted = posted_at
+                if posted.tzinfo is None:
+                    posted = posted.replace(tzinfo=timezone.utc)
             else:
-                parts.append(f"posted {age_days}d ago")
-        except (ValueError, AttributeError):
+                parts.append("posted recently")
+                posted = None
+            
+            if posted:
+                now = datetime.now(timezone.utc)
+                age_days = (now - posted).days
+                if age_days == 0:
+                    parts.append("posted today")
+                elif age_days == 1:
+                    parts.append("posted 1d ago")
+                else:
+                    parts.append(f"posted {age_days}d ago")
+        except (ValueError, AttributeError, TypeError):
             parts.append("posted recently")
     else:
         parts.append("post date unknown")
@@ -274,8 +285,18 @@ def _recency(listing: dict) -> float:
         return 0.5
 
     try:
-        posted = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
+        # Handle both string (SQLite) and datetime object (Postgres)
+        if isinstance(posted_at, str):
+            posted = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
+        elif hasattr(posted_at, 'tzinfo'):
+            # Already a datetime object
+            posted = posted_at
+            # Ensure it's timezone-aware
+            if posted.tzinfo is None:
+                posted = posted.replace(tzinfo=timezone.utc)
+        else:
+            return 0.5
+    except (ValueError, AttributeError, TypeError):
         return 0.5
 
     now = datetime.now(timezone.utc)

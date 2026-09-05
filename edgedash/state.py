@@ -50,9 +50,29 @@ def read_state(config: Any, now: datetime) -> SystemState:
         try:
             # Handle both ISO format strings and Postgres timestamps
             last_fetch_str = str(last_fetch_at)
-            last_fetch_dt = datetime.fromisoformat(last_fetch_str.replace("Z", "+00:00"))
+            
+            # Try parsing with various formats
+            if 'Z' in last_fetch_str:
+                last_fetch_dt = datetime.fromisoformat(last_fetch_str.replace("Z", "+00:00"))
+            else:
+                # Try direct parsing (works for ISO format from Postgres)
+                last_fetch_dt = datetime.fromisoformat(last_fetch_str)
+            
+            # Ensure timezone-aware for comparison
+            if last_fetch_dt.tzinfo is None:
+                from datetime import timezone
+                last_fetch_dt = last_fetch_dt.replace(tzinfo=timezone.utc)
+            
+            # Ensure 'now' is also timezone-aware
+            if now.tzinfo is None:
+                from datetime import timezone
+                now = now.replace(tzinfo=timezone.utc)
+            
             hours_since_fetch = (now - last_fetch_dt).total_seconds() / 3600.0
-        except (ValueError, AttributeError, TypeError):
+        except (ValueError, AttributeError, TypeError) as e:
+            # Log the error for debugging
+            import sys
+            print(f"[state] Warning: Could not parse last_fetch_at '{last_fetch_at}': {e}", file=sys.stderr)
             hours_since_fetch = float("inf")
     else:
         hours_since_fetch = float("inf")

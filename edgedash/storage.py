@@ -114,11 +114,20 @@ def _fetchone(conn: Any, query: str, params: dict | tuple = None) -> dict[str, A
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             # Convert :name style to %s style for postgres
             pg_query = query.replace("?", "%s")
-            for key in sorted((params or {}).keys(), key=len, reverse=True):
-                pg_query = pg_query.replace(f":{key}", "%s")
             
             if isinstance(params, dict):
-                cur.execute(pg_query, list(params.values()))
+                # Sort keys by length (descending) to avoid partial replacements
+                sorted_keys = sorted(params.keys(), key=len, reverse=True)
+                for key in sorted_keys:
+                    pg_query = pg_query.replace(f":{key}", "%s")
+                
+                # Extract values in the order they appear in the ORIGINAL query
+                import re
+                placeholder_pattern = r':(\w+)'
+                matches = re.findall(placeholder_pattern, query)
+                values = [params[key] for key in matches]
+                
+                cur.execute(pg_query, values)
             else:
                 cur.execute(pg_query, params or ())
             
@@ -138,11 +147,20 @@ def _fetchall(conn: Any, query: str, params: dict | tuple = None) -> list[dict[s
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             # Convert :name style to %s style for postgres
             pg_query = query.replace("?", "%s")
-            for key in sorted((params or {}).keys(), key=len, reverse=True):
-                pg_query = pg_query.replace(f":{key}", "%s")
             
             if isinstance(params, dict):
-                cur.execute(pg_query, list(params.values()))
+                # Sort keys by length (descending) to avoid partial replacements
+                sorted_keys = sorted(params.keys(), key=len, reverse=True)
+                for key in sorted_keys:
+                    pg_query = pg_query.replace(f":{key}", "%s")
+                
+                # Extract values in the order they appear in the ORIGINAL query
+                import re
+                placeholder_pattern = r':(\w+)'
+                matches = re.findall(placeholder_pattern, query)
+                values = [params[key] for key in matches]
+                
+                cur.execute(pg_query, values)
             else:
                 cur.execute(pg_query, params or ())
             
@@ -160,11 +178,21 @@ def _execute(conn: Any, query: str, params: dict | tuple = None) -> int:
         with conn.cursor() as cur:
             # Convert :name style to %s style for postgres
             pg_query = query.replace("?", "%s")
-            for key in sorted((params or {}).keys(), key=len, reverse=True):
-                pg_query = pg_query.replace(f":{key}", "%s")
             
             if isinstance(params, dict):
-                cur.execute(pg_query, list(params.values()))
+                # Sort keys by length (descending) to avoid partial replacements
+                sorted_keys = sorted(params.keys(), key=len, reverse=True)
+                for key in sorted_keys:
+                    pg_query = pg_query.replace(f":{key}", "%s")
+                
+                # Extract values in the order they appear in the ORIGINAL query
+                # Find all :key placeholders in original query in order
+                import re
+                placeholder_pattern = r':(\w+)'
+                matches = re.findall(placeholder_pattern, query)
+                values = [params[key] for key in matches]
+                
+                cur.execute(pg_query, values)
             else:
                 cur.execute(pg_query, params or ())
             
@@ -181,12 +209,19 @@ def _executemany(conn: Any, query: str, params_list: list[dict]) -> None:
             # Convert :name style to %s style for postgres
             pg_query = query
             if params_list:
+                # Sort keys by length (descending) to avoid partial replacements
                 keys = list(params_list[0].keys())
-                for key in sorted(keys, key=len, reverse=True):
+                sorted_keys = sorted(keys, key=len, reverse=True)
+                for key in sorted_keys:
                     pg_query = pg_query.replace(f":{key}", "%s")
                 
-                values_list = [list(p.values()) for p in params_list]
-                for values in values_list:
+                # Extract values in the order they appear in the ORIGINAL query
+                import re
+                placeholder_pattern = r':(\w+)'
+                matches = re.findall(placeholder_pattern, query)
+                
+                for params in params_list:
+                    values = [params[key] for key in matches]
                     cur.execute(pg_query, values)
     else:
         conn.executemany(query, params_list)
@@ -415,6 +450,9 @@ def upsert_listings(rows: list[dict[str, Any]]) -> int:
         r.setdefault("fit_score", None)
         r.setdefault("fit_reason", None)
         r.setdefault("posted_at", None)
+        # fetched_at must not be null - use current time if not provided
+        if "fetched_at" not in r or r["fetched_at"] is None:
+            r["fetched_at"] = utc_now()
         prepared.append(r)
 
     with _connection() as conn:
