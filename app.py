@@ -399,12 +399,12 @@ def render_activity_log():
         logger.error(f"Activity log render failed: {e}")
         st.error("Unable to load activity log")
                 
-                if cycle.get("failed_checks"):
-                    st.text(f"\nFailed checks:\n{cycle.get('failed_checks')}")
-                
-                st.text(f"\nRecords touched: {cycle.get('records_touched', 0)}")
-                st.text(f"Retry count: {cycle.get('retry_count', 0)}")
-                st.text(f"Duration: {format_duration(cycle.get('started_at'), cycle.get('finished_at'))}")
+        if cycle.get("failed_checks"):
+            st.text(f"\nFailed checks:\n{cycle.get('failed_checks')}")
+        
+        st.text(f"\nRecords touched: {cycle.get('records_touched', 0)}")
+        st.text(f"Retry count: {cycle.get('retry_count', 0)}")
+        st.text(f"Duration: {format_duration(cycle.get('started_at'), cycle.get('finished_at'))}")
     
     except Exception as e:
         logger.error(f"Activity log render failed: {e}")
