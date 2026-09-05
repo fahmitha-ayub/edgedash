@@ -1,0 +1,146 @@
+# EdgeDash configuration — edit this file, never the source code.
+# All user-specific values live here.
+
+# The role you are targeting. Used in job search queries and scoring.
+target_role: "Security Engineer"
+
+# The city / region you want to filter listings by.
+target_city: "Berlin"
+
+# Additional search keywords appended to every query.
+keywords:
+  - "Security"
+  - "SQL"
+  - "Python"
+  - "Machine Learning"
+  - "Artificial Intelligence"
+  - "Workflow Automation"
+
+# Your current skill set. The GapAnalyzer compares job requirements against this list.
+my_skills:
+  - "Security"
+  - "Python"
+  - "SQL"
+  - "Excel"
+  - "Pandas"
+  - "NumPy"
+  - "Matplotlib"
+  - "n8n"
+
+# Years of relevant experience. Influences fit scoring.
+experience_years: 0
+
+# Path to the SQLite database file, relative to the repo root.
+# In week 4 this moves to storage.py; you will not need to change it here.
+db_path: "edgedash.db"
+
+# Minimum fit score (0–100) a listing must reach to appear on the dashboard.
+min_fit_score: 60
+
+# Sources to fetch from. Must match registered source names in edgedash/sources/.
+sources:
+  - arbeitnow
+
+# Set to true to use MockFetcher instead of the real Fetcher (for offline dev).
+use_mock_fetcher: false
+
+# LLM provider: "gemini" or "ollama".
+llm_provider: gemini
+
+# Model name for the chosen provider.
+llm_model: gemini-3.6-flash
+
+# Maximum listings to score per cycle (cost/rate limit protection).
+llm_batch_size: 2
+
+# Target seniority level (junior | mid | senior | lead).
+target_seniority: mid
+
+# Scoring component weights (must sum to 1.0).
+weight_skill_match: 0.45
+weight_seniority_fit: 0.25
+weight_location_fit: 0.15
+weight_recency: 0.15
+
+# Skill aliases — canonical name mapping (steering rule 23).
+# This map is YOURS to edit. Add entries as you see duplicate skill names
+# in your own data. The canonicalisation is deterministic: same input,
+# same output, no model judgement.
+#
+# Format: "raw_skill_name: canonical_name"
+skill_aliases:
+  # Kubernetes variations
+  k8s: kubernetes
+  k8: kubernetes
+  kube: kubernetes
+  
+  # Cloud platforms
+  gcp: google cloud platform
+  google cloud: google cloud platform
+  gcr: google cloud platform
+  aws: amazon web services
+  ec2: amazon web services
+  s3: amazon web services
+  azure: microsoft azure
+  
+  # Databases
+  postgres: postgresql
+  psql: postgresql
+  pg: postgresql
+  mysql: mysql
+  mongo: mongodb
+  
+  # Languages (keep node separate from javascript)
+  py: python
+  golang: go
+  
+  # Node.js variations (NOT aliased to javascript)
+  node: node.js
+  nodejs: node.js
+  
+  # DevOps/CI-CD
+  cicd: ci/cd
+  ci cd: ci/cd
+  continuous integration: ci/cd
+  
+  # Machine Learning
+  ml: machine learning
+  
+  # Containers
+  docker: docker
+  
+  # Version control
+  github: git
+  gitlab: git
+  
+  # Frontend
+  react: react
+  reactjs: react
+  vue: vue.js
+  vuejs: vue.js
+  angular: angular
+  
+  # Other common variations
+  tf: terraform
+  rest: rest api
+  restful: rest api
+
+
+# Verification thresholds (steering rule 39).
+# Each threshold has a comment naming the failure it catches.
+
+# Catches score inflation (all scores clustered near 50).
+min_score_spread: 10
+min_score_stdev: 5
+
+# Catches broken extractor returning empty results.
+max_empty_extraction_pct: 20
+
+# Catches extractor returning a full sentence as a skill list.
+max_skills_per_listing: 50
+
+# Catches ranking a skill gap based on insufficient evidence.
+min_gap_sample: 3
+
+# Catches dead fetcher (no new data in days).
+max_data_age_days: 3
