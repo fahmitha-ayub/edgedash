@@ -126,17 +126,18 @@ def companies_hiring(days: int = 7) -> ToolResult:
     
     # Query through storage
     with storage._connection() as conn:
-        rows = conn.execute(
+        rows = storage._fetchall(
+            conn,
             """
             SELECT company, COUNT(*) as listing_count
             FROM   listings
-            WHERE  posted_at >= ?
-              AND  scored_at <= ?
+            WHERE  posted_at >= :cutoff
+              AND  scored_at <= :cycle_ts
             GROUP  BY company
             ORDER  BY listing_count DESC, company ASC
             """,
-            (cutoff_str, cycle_timestamp),
-        ).fetchall()
+            {"cutoff": cutoff_str, "cycle_ts": cycle_timestamp},
+        )
     
     result = [dict(row) for row in rows]
     total = sum(r["listing_count"] for r in result)
@@ -172,19 +173,20 @@ def best_matches(n: int = 10) -> ToolResult:
     cycle_timestamp = passing_cycle.get("finished_at")
     
     with storage._connection() as conn:
-        rows = conn.execute(
+        rows = storage._fetchall(
+            conn,
             """
             SELECT fit_score as score, title, company, fit_reason as reason, url
             FROM   listings
             WHERE  fit_score IS NOT NULL
-              AND  scored_at <= ?
+              AND  scored_at <= :cycle_ts
             ORDER  BY fit_score DESC, title ASC
-            LIMIT  ?
+            LIMIT  :n
             """,
-            (cycle_timestamp, n),
-        ).fetchall()
+            {"cycle_ts": cycle_timestamp, "n": n},
+        )
     
-    result = [dict(row) for row in rows]
+    result = rows
     
     if result:
         summary = f"Top {len(result)} listings (highest score: {result[0]['score']})"
@@ -261,19 +263,20 @@ def gap_detail(skill: str, config: Any = None) -> ToolResult:
     # Get listings that require this skill
     with storage._connection() as conn:
         # First check if skill exists in extraction cache
-        rows = conn.execute(
+        rows = storage._fetchall(
+            conn,
             """
             SELECT l.fit_score as score, l.title, l.company, l.url,
                    e.required_skills
             FROM   listings l
             JOIN   extraction_cache e ON e.description_hash = 
                    lower(hex(randomblob(16)))  -- Placeholder, need proper hash join
-            WHERE  l.scored_at <= ?
+            WHERE  l.scored_at <= :cycle_ts
               AND  l.fit_score IS NOT NULL
             LIMIT  0
             """,
-            (cycle_timestamp,),
-        ).fetchall()
+            {"cycle_ts": cycle_timestamp},
+        )
     
     # TODO: Proper implementation requires storing extraction hash with listing
     # For now, return empty with explanation
@@ -307,17 +310,18 @@ def trend(weeks: int = 3) -> ToolResult:
     cutoff_str = cutoff.isoformat()
     
     with storage._connection() as conn:
-        rows = conn.execute(
+        rows = storage._fetchall(
+            conn,
             """
             SELECT skill, computed_at, opportunity_cost
             FROM   gap_snapshots
-            WHERE  computed_at >= ?
+            WHERE  computed_at >= :cutoff
             ORDER  BY skill ASC, computed_at ASC
             """,
-            (cutoff_str,),
-        ).fetchall()
+            {"cutoff": cutoff_str},
+        )
     
-    result = [dict(row) for row in rows]
+    result = rows
     
     if result:
         unique_skills = len(set(r["skill"] for r in result))
@@ -344,19 +348,20 @@ def listing_count() -> ToolResult:
     cycle_timestamp = passing_cycle.get("finished_at")
     
     with storage._connection() as conn:
-        row = conn.execute(
+        row = storage._fetchone(
+            conn,
             """
             SELECT COUNT(*) as total,
                    SUM(CASE WHEN fit_score IS NOT NULL THEN 1 ELSE 0 END) as scored,
                    SUM(CASE WHEN fit_score IS NULL THEN 1 ELSE 0 END) as unscored,
                    MAX(posted_at) as newest_listing
             FROM   listings
-            WHERE  fetched_at <= ?
+            WHERE  fetched_at <= :cycle_ts
             """,
-            (cycle_timestamp,),
-        ).fetchone()
+            {"cycle_ts": cycle_timestamp},
+        )
     
-    result = [dict(row)]
+    result = [row] if row else []
     summary = f"{result[0]['total']} listings ({result[0]['scored']} scored, {result[0]['unscored']} unscored)"
     
     return ToolResult(rows=result, summary=summary)
@@ -389,18 +394,19 @@ def skill_demand(skill: str, config: Any = None) -> ToolResult:
     
     # Query extraction cache for this skill
     with storage._connection() as conn:
-        row = conn.execute(
+        row = storage._fetchone(
+            conn,
             """
             SELECT 
-                SUM(CASE WHEN required_skills LIKE ? THEN 1 ELSE 0 END) as required_count,
-                SUM(CASE WHEN nice_to_have LIKE ? THEN 1 ELSE 0 END) as nice_to_have_count,
+                SUM(CASE WHEN required_skills LIKE :skill_pattern THEN 1 ELSE 0 END) as required_count,
+                SUM(CASE WHEN nice_to_have LIKE :skill_pattern THEN 1 ELSE 0 END) as nice_to_have_count,
                 COUNT(*) as total_listings
             FROM   extraction_cache
             """,
-            (f"%{canonical_skill}%", f"%{canonical_skill}%"),
-        ).fetchone()
+            {"skill_pattern": f"%{canonical_skill}%"},
+        )
     
-    result = [dict(row)]
+    result = [row] if row else []
     req = result[0]["required_count"]
     nice = result[0]["nice_to_have_count"]
     

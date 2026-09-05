@@ -262,102 +262,142 @@ def render_header():
 
 def render_activity_log():
     """Render recent cycle activity log (main panel)."""
-    st.header("Agent Activity Log")
-    st.caption("Most recent 30 orchestrator cycles (includes failed/degraded)")
+    st.header("🔄 Agent Activity Log")
     
     try:
         cycles = safe_load_recent_cycles(limit=30)
         
         if not cycles:
-            st.info("No cycles recorded yet. Run the orchestrator to populate data.")
+            st.info("💤 No cycles recorded yet. Run the orchestrator to populate data.")
             return
         
-        # Build table data
+        # Show count and summary
+        st.caption(f"Showing {len(cycles)} most recent cycles")
+        
+        # Build compact table data
         rows = []
         for cycle in cycles:
-            # Parse notes (pipe-separated format from orchestrator)
-            notes = cycle.get("notes", "")
+            verdict = cycle.get("verdict", "unknown")
+            status_icon = verdict_emoji(verdict)
             
+            # Extract duration
+            duration = format_duration(cycle.get("started_at"), cycle.get("finished_at"))
+            
+            # Extract agent summary from notes
+            notes = cycle.get("notes", "")
             agents_run = []
             agents_skipped = []
-            skip_reasons = {}
             
             if notes:
-                # Parse pipe-separated format
-                parts = [p.strip() for p in notes.split("|")]
-                for part in parts:
-                    if "skip" in part:
-                        if ":" in part:
-                            agent_name = part.split(":")[0].strip()
-                            if "(" in part and ")" in part:
-                                reason = part[part.find("(")+1:part.find(")")].strip()
-                                agents_skipped.append(agent_name)
-                                skip_reasons[agent_name] = reason
-                            else:
-                                agents_skipped.append(agent_name)
-                    elif ":" in part and not part.startswith("retry_count"):
-                        agent_name = part.split(":")[0].strip()
-                        if agent_name not in ["verifier", "retry_count"]:
-                            agents_run.append(agent_name)
+                # Simple parsing - look for agent names
+                if "fetcher" in notes.lower():
+                    if "skip" in notes.lower() and "fetcher" in notes.lower():
+                        agents_skipped.append("fetcher")
+                    else:
+                        agents_run.append("fetcher")
+                if "scorer" in notes.lower():
+                    if "skip" in notes.lower() and "scorer" in notes.lower():
+                        agents_skipped.append("scorer")
+                    else:
+                        agents_run.append("scorer")
+                if "gap_analyzer" in notes.lower() or "gap" in notes.lower():
+                    if "skip" in notes.lower():
+                        agents_skipped.append("gaps")
+                    else:
+                        agents_run.append("gaps")
             
-            # Format skipped agents with reasons
-            if agents_skipped and skip_reasons:
-                skipped_display = ", ".join(
-                    f"{agent} ({skip_reasons.get(agent, 'no reason')})" 
-                    for agent in agents_skipped
-                )
-            elif agents_skipped:
-                skipped_display = ", ".join(agents_skipped)
+            # Compact summary
+            if agents_run:
+                summary = " + ".join(agents_run)
             else:
-                skipped_display = "—"
+                summary = "—"
             
-            # Format failed checks
-            failed_checks = cycle.get("failed_checks", "")
-            if failed_checks:
-                try:
-                    checks_data = json.loads(failed_checks)
-                    failed_parts = []
-                    for c in checks_data:
-                        name = c.get("name", "unknown")
-                        observed = c.get("observed", "")
-                        threshold = c.get("threshold", "")
-                        if observed and threshold:
-                            failed_parts.append(f"{name} (observed: {observed}, threshold: {threshold})")
-                        else:
-                            failed_parts.append(name)
-                    failed_display = ", ".join(failed_parts)
-                except (json.JSONDecodeError, TypeError):
-                    failed_display = failed_checks if failed_checks else "—"
-            else:
-                failed_display = "—"
+            if agents_skipped:
+                summary += f" (⏭ {', '.join(agents_skipped)})"
+            
+            # Extract key failure reason if any
+            failed_reason = "—"
+            if verdict != "pass":
+                failed_checks = cycle.get("failed_checks", "")
+                if failed_checks:
+                    # Extract first failure reason
+                    if "," in failed_checks:
+                        failed_reason = failed_checks.split(",")[0].strip()
+                    else:
+                        failed_reason = failed_checks
             
             rows.append({
-                "Status": verdict_emoji(cycle.get("verdict")),
-                "Timestamp": format_datetime(cycle.get("started_at")),
-                "Agents Run": ", ".join(agents_run) if agents_run else "—",
-                "Skipped (Reason)": skipped_display,
-                "Verdict": cycle.get("verdict", "—").upper() if cycle.get("verdict") else "—",
-                "Failed Check": failed_display,
-                "Retries": cycle.get("retry_count", 0),
-                "Duration": format_duration(cycle.get("started_at"), cycle.get("finished_at")),
+                "": status_icon,
+                "Time": format_datetime(cycle.get("started_at")),
+                "Agents": summary,
+                "Verdict": verdict.upper() if verdict else "—",
+                "Failure": failed_reason,
+                "Duration": duration,
             })
         
-        # Display as dataframe
+        # Display as styled dataframe
+        import pandas as pd
+        df = pd.DataFrame(rows)
+        
+        # Apply conditional formatting based on verdict
+        def highlight_verdict(row):
+            if row["Verdict"] == "PASS":
+                return ['background-color: #d4edda'] * len(row)
+            elif row["Verdict"] == "FAIL":
+                return ['background-color: #f8d7da'] * len(row)
+            elif row["Verdict"] == "DEGRADED":
+                return ['background-color: #fff3cd'] * len(row)
+            else:
+                return [''] * len(row)
+        
+        styled_df = df.style.apply(highlight_verdict, axis=1)
+        
         st.dataframe(
-            rows,
+            styled_df,
             use_container_width=True,
-            height=600,
+            height=min(400 + (len(cycles) * 10), 650),  # Dynamic height
             hide_index=True,
+            column_config={
+                "": st.column_config.TextColumn(width="small"),
+                "Time": st.column_config.TextColumn(width="medium"),
+                "Agents": st.column_config.TextColumn(width="large"),
+                "Verdict": st.column_config.TextColumn(width="small"),
+                "Failure": st.column_config.TextColumn(width="medium"),
+                "Duration": st.column_config.TextColumn(width="small"),
+            }
         )
         
-        # Add expandable details section
-        st.markdown("### Recent Cycle Details")
-        for i, cycle in enumerate(cycles[:5]):
-            verdict = cycle.get("verdict", "unknown")
-            timestamp = format_datetime(cycle.get("started_at"))
-            
-            with st.expander(f"{verdict_emoji(verdict)} {timestamp} - {verdict.upper() if verdict else 'UNKNOWN'}"):
-                st.text(f"Full notes:\n{cycle.get('notes', 'No notes')}")
+        # Add summary metrics in columns
+        col1, col2, col3, col4 = st.columns(4)
+        
+        pass_count = sum(1 for c in cycles if c.get("verdict") == "pass")
+        fail_count = sum(1 for c in cycles if c.get("verdict") == "fail")
+        degraded_count = sum(1 for c in cycles if c.get("verdict") == "degraded")
+        
+        with col1:
+            st.metric("✅ Passed", pass_count)
+        with col2:
+            st.metric("❌ Failed", fail_count)
+        with col3:
+            st.metric("⚠️ Degraded", degraded_count)
+        with col4:
+            success_rate = (pass_count / len(cycles) * 100) if cycles else 0
+            st.metric("Success Rate", f"{success_rate:.0f}%")
+        
+        # Expandable recent failures
+        recent_failures = [c for c in cycles[:10] if c.get("verdict") != "pass"]
+        if recent_failures:
+            st.markdown("### 🔍 Recent Failures")
+            for cycle in recent_failures[:3]:  # Show up to 3
+                verdict = cycle.get("verdict", "unknown")
+                timestamp = format_datetime(cycle.get("started_at"))
+                
+                with st.expander(f"{verdict_emoji(verdict)} {timestamp} - {verdict.upper()}"):
+                    st.code(cycle.get("notes", "No notes"), language="text")
+    
+    except Exception as e:
+        logger.error(f"Activity log render failed: {e}")
+        st.error("Unable to load activity log")
                 
                 if cycle.get("failed_checks"):
                     st.text(f"\nFailed checks:\n{cycle.get('failed_checks')}")
