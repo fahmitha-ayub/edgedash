@@ -263,33 +263,42 @@ def render_header():
 def render_activity_log():
     """Render recent cycle activity log (main panel)."""
     st.header("🔄 Agent Activity Log")
-    
+    st.caption("What the agent has been doing across its recent runs")
+
     try:
         cycles = safe_load_recent_cycles(limit=30)
-        
+
         if not cycles:
             st.info("💤 No cycles recorded yet. Run the orchestrator to populate data.")
             return
-        
-        # Show count and summary
-        st.caption(f"Showing {len(cycles)} most recent cycles")
-        
-        # Build compact table data
+
+        # ---- Quick-scan summary, up top where job seekers will actually see it ----
+        pass_count = sum(1 for c in cycles if c.get("verdict") == "pass")
+        fail_count = sum(1 for c in cycles if c.get("verdict") == "fail")
+        degraded_count = sum(1 for c in cycles if c.get("verdict") == "degraded")
+        success_rate = (pass_count / len(cycles) * 100) if cycles else 0
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("✅ Passed", pass_count)
+        m2.metric("❌ Failed", fail_count)
+        m3.metric("⚠️ Degraded", degraded_count)
+        m4.metric("Success Rate", f"{success_rate:.0f}%")
+
+        st.caption(f"Showing the {len(cycles)} most recent cycles, newest first")
+
+        # ---- Build compact table data (same parsing as before) ----
         rows = []
         for cycle in cycles:
             verdict = cycle.get("verdict", "unknown")
             status_icon = verdict_emoji(verdict)
-            
-            # Extract duration
+
             duration = format_duration(cycle.get("started_at"), cycle.get("finished_at"))
-            
-            # Extract agent summary from notes
+
             notes = cycle.get("notes", "")
             agents_run = []
             agents_skipped = []
-            
+
             if notes:
-                # Simple parsing - look for agent names
                 if "fetcher" in notes.lower():
                     if "skip" in notes.lower() and "fetcher" in notes.lower():
                         agents_skipped.append("fetcher")
@@ -305,27 +314,20 @@ def render_activity_log():
                         agents_skipped.append("gaps")
                     else:
                         agents_run.append("gaps")
-            
-            # Compact summary
-            if agents_run:
-                summary = " + ".join(agents_run)
-            else:
-                summary = "—"
-            
+
+            summary = " + ".join(agents_run) if agents_run else "—"
             if agents_skipped:
                 summary += f" (⏭ {', '.join(agents_skipped)})"
-            
-            # Extract key failure reason if any
+
             failed_reason = "—"
             if verdict != "pass":
                 failed_checks = cycle.get("failed_checks", "")
                 if failed_checks:
-                    # Extract first failure reason
                     if "," in failed_checks:
                         failed_reason = failed_checks.split(",")[0].strip()
                     else:
                         failed_reason = failed_checks
-            
+
             rows.append({
                 "": status_icon,
                 "Time": format_datetime(cycle.get("started_at")),
@@ -334,12 +336,10 @@ def render_activity_log():
                 "Failure": failed_reason,
                 "Duration": duration,
             })
-        
-        # Display as styled dataframe
+
         import pandas as pd
         df = pd.DataFrame(rows)
-        
-        # Apply conditional formatting based on verdict
+
         def highlight_verdict(row):
             if row["Verdict"] == "PASS":
                 return ['background-color: #d4edda'] * len(row)
@@ -349,13 +349,13 @@ def render_activity_log():
                 return ['background-color: #fff3cd'] * len(row)
             else:
                 return [''] * len(row)
-        
+
         styled_df = df.style.apply(highlight_verdict, axis=1)
-        
+
         st.dataframe(
             styled_df,
             use_container_width=True,
-            height=min(400 + (len(cycles) * 10), 650),  # Dynamic height
+            height=min(400 + (len(cycles) * 10), 650),
             hide_index=True,
             column_config={
                 "": st.column_config.TextColumn(width="small"),
@@ -366,46 +366,16 @@ def render_activity_log():
                 "Duration": st.column_config.TextColumn(width="small"),
             }
         )
-        
-        # Add summary metrics in columns
-        col1, col2, col3, col4 = st.columns(4)
-        
-        pass_count = sum(1 for c in cycles if c.get("verdict") == "pass")
-        fail_count = sum(1 for c in cycles if c.get("verdict") == "fail")
-        degraded_count = sum(1 for c in cycles if c.get("verdict") == "degraded")
-        
-        with col1:
-            st.metric("✅ Passed", pass_count)
-        with col2:
-            st.metric("❌ Failed", fail_count)
-        with col3:
-            st.metric("⚠️ Degraded", degraded_count)
-        with col4:
-            success_rate = (pass_count / len(cycles) * 100) if cycles else 0
-            st.metric("Success Rate", f"{success_rate:.0f}%")
-        
-        # Expandable recent failures
-        recent_failures = [c for c in cycles[:10] if c.get("verdict") != "pass"]
-        if recent_failures:
-            st.markdown("### 🔍 Recent Failures")
-            for cycle in recent_failures[:3]:  # Show up to 3
-                verdict = cycle.get("verdict", "unknown")
-                timestamp = format_datetime(cycle.get("started_at"))
-                
-                with st.expander(f"{verdict_emoji(verdict)} {timestamp} - {verdict.upper()}"):
-                    st.code(cycle.get("notes", "No notes"), language="text")
-    
-    except Exception as e:
-        logger.error(f"Activity log render failed: {e}")
-        st.error("Unable to load activity log")
-                
-        if cycle.get("failed_checks"):
-            st.text(f"\nFailed checks:\n{cycle.get('failed_checks')}")
-        
-        st.text(f"\nRecords touched: {cycle.get('records_touched', 0)}")
-        st.text(f"Retry count: {cycle.get('retry_count', 0)}")
-        st.text(f"Duration: {format_duration(cycle.get('started_at'), cycle.get('finished_at'))}")
-    
+
+        # ---- Optional trend view, tucked away so it doesn't clutter the table ----
+        with st.expander("📈 See verdict trend across these cycles"):
+            trend_df = pd.DataFrame({
+                "Cycle (oldest → newest)": list(range(1, len(cycles) + 1)),
+                "Passed": [1 if c.get("verdict") == "pass" else 0 for c in reversed(cycles)],
+            })
+            st.bar_chart(trend_df.set_index("Cycle (oldest → newest)"), height=180)
+            st.caption("Bar height of 1 = pass, 0 = fail/degraded.")
+
     except Exception as e:
         logger.error(f"Activity log render failed: {e}")
         st.error("Unable to load activity log")
