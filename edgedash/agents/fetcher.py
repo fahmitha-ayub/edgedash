@@ -50,7 +50,7 @@ class Fetcher:
         for source_name in enabled:
             if source_name not in SOURCES:
                 msg = f"Source '{source_name}' not found in registry."
-                print(f"  ⚠ [fetcher] {msg}")
+                print(f"  ! [fetcher] {msg}")
                 source_summaries.append(f"{source_name}: FAILED ({msg})")
                 log_cycle(
                     agent=f"fetcher.{source_name}",
@@ -70,7 +70,7 @@ class Fetcher:
                 rows = source_instance.fetch(config)
             except (SourceError, Exception) as exc:
                 short = _short_exc(exc)
-                print(f"  ⚠ [fetcher] source '{source_name}' failed: {short}")
+                print(f"  ! [fetcher] source '{source_name}' failed: {short}")
                 source_summaries.append(f"{source_name}: FAILED ({short})")
                 log_cycle(
                     agent=f"fetcher.{source_name}",

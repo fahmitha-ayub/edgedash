@@ -212,6 +212,13 @@ def check_freshness(latest_fetch_at: str | None, config: Any, now: datetime) -> 
     
     try:
         latest_dt = datetime.fromisoformat(latest_fetch_at.replace("Z", "+00:00"))
+        # Ensure both timestamps are timezone-aware for comparison
+        if latest_dt.tzinfo is None:
+            from datetime import timezone
+            latest_dt = latest_dt.replace(tzinfo=timezone.utc)
+        if now.tzinfo is None:
+            from datetime import timezone
+            now = now.replace(tzinfo=timezone.utc)
     except (ValueError, AttributeError):
         return CheckResult(
             name="freshness",

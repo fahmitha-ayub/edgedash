@@ -438,7 +438,17 @@ def last_fetch_time() -> str | None:
     """Return the most recent fetched_at timestamp, or None if no listings exist."""
     with _connection() as conn:
         row = _fetchone(conn, "SELECT MAX(fetched_at) as max_time FROM listings")
-    return row["max_time"] if row else None
+    
+    if not row or not row["max_time"]:
+        return None
+    
+    # Ensure it's always a string (Postgres might return datetime object)
+    max_time = row["max_time"]
+    if isinstance(max_time, str):
+        return max_time
+    else:
+        # Convert datetime object to ISO string
+        return max_time.isoformat() if hasattr(max_time, 'isoformat') else str(max_time)
 
 
 def get_listings(limit: int = 100, min_score: int = 0) -> list[dict[str, Any]]:

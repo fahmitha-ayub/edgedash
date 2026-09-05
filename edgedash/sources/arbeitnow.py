@@ -131,8 +131,8 @@ class ArbeitnowSource:
             final_rows = city_filtered
 
         print(
-            f"  [arbeitnow] {len(raw_rows)} raw → "
-            f"{len(city_filtered)} city-filtered → "
+            f"  [arbeitnow] {len(raw_rows)} raw -> "
+            f"{len(city_filtered)} city-filtered -> "
             f"{len(final_rows)} returned"
         )
 

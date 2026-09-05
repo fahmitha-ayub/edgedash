@@ -40,24 +40,25 @@ def read_state(config: Any, now: datetime) -> SystemState:
     Returns:
         SystemState snapshot
     """
-    from edgedash.storage import (
-        init_db,
-        last_fetch_time,
-        count_unscored,
-    )
+    from edgedash import storage
     
-    init_db(config.db_path)
+    storage.configure(config.db_path)
     
     # Last fetch time
-    last_fetch_at = last_fetch_time()
+    last_fetch_at = storage.last_fetch_time()
     if last_fetch_at:
-        last_fetch_dt = datetime.fromisoformat(last_fetch_at.replace("Z", "+00:00"))
-        hours_since_fetch = (now - last_fetch_dt).total_seconds() / 3600.0
+        try:
+            # Handle both ISO format strings and Postgres timestamps
+            last_fetch_str = str(last_fetch_at)
+            last_fetch_dt = datetime.fromisoformat(last_fetch_str.replace("Z", "+00:00"))
+            hours_since_fetch = (now - last_fetch_dt).total_seconds() / 3600.0
+        except (ValueError, AttributeError, TypeError):
+            hours_since_fetch = float("inf")
     else:
         hours_since_fetch = float("inf")
     
     # Unscored count
-    unscored_count = count_unscored()
+    unscored_count = storage.count_unscored()
     
     # Gap analysis state
     gaps_computed_at = _last_gap_analysis_time()
@@ -79,18 +80,11 @@ def read_state(config: Any, now: datetime) -> SystemState:
 
 def _last_gap_analysis_time() -> str | None:
     """Return the timestamp of the most recent gap analysis, or None."""
-    import sqlite3
-    from edgedash.config import load_config
+    from edgedash import storage
     
-    config = load_config()
-    conn = sqlite3.connect(config.db_path)
-    conn.row_factory = sqlite3.Row
+    with storage._connection() as conn:
+        row = storage._fetchone(conn, "SELECT MAX(computed_at) as latest FROM gap_snapshots")
     
-    row = conn.execute(
-        "SELECT MAX(computed_at) as latest FROM gap_snapshots"
-    ).fetchone()
-    
-    conn.close()
     return row["latest"] if row else None
 
 
@@ -99,47 +93,38 @@ def _gaps_are_stale(gaps_computed_at: str | None) -> bool:
     if gaps_computed_at is None:
         return True  # Never computed
     
-    import sqlite3
-    from edgedash.config import load_config
+    from edgedash import storage
     
-    config = load_config()
-    conn = sqlite3.connect(config.db_path)
-    conn.row_factory = sqlite3.Row
+    with storage._connection() as conn:
+        row = storage._fetchone(
+            conn,
+            """
+            SELECT COUNT(*) as count
+            FROM listings
+            WHERE scored_at IS NOT NULL AND scored_at > :gaps_at
+            """,
+            {"gaps_at": gaps_computed_at},
+        )
     
-    # Check if any listing was scored after the gap analysis
-    row = conn.execute(
-        """
-        SELECT COUNT(*) as count
-        FROM listings
-        WHERE scored_at IS NOT NULL AND scored_at > :gaps_at
-        """,
-        {"gaps_at": gaps_computed_at},
-    ).fetchone()
-    
-    conn.close()
     return row["count"] > 0 if row else False
 
 
 def _last_cycle_info() -> tuple[str | None, str | None]:
-    """Return (verdict, timestamp) of the most recent cycle, or (None, None)."""
-    import sqlite3
-    from edgedash.config import load_config
+    """Return (verdict, timestamp) of the most recent orchestrator cycle."""
+    from edgedash import storage
     
-    config = load_config()
-    conn = sqlite3.connect(config.db_path)
-    conn.row_factory = sqlite3.Row
-    
-    row = conn.execute(
-        """
-        SELECT status, finished_at
-        FROM cycle_log
-        ORDER BY finished_at DESC
-        LIMIT 1
-        """
-    ).fetchone()
-    
-    conn.close()
+    with storage._connection() as conn:
+        row = storage._fetchone(
+            conn,
+            """
+            SELECT verdict, finished_at 
+            FROM cycle_log 
+            WHERE agent = 'orchestrator' 
+            ORDER BY finished_at DESC 
+            LIMIT 1
+            """
+        )
     
     if row:
-        return row["status"], row["finished_at"]
+        return row["verdict"], row["finished_at"]
     return None, None
