@@ -151,10 +151,18 @@ def format_datetime(iso_str: str | None) -> str:
     if not iso_str:
         return "—"
     try:
-        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        # Handle both string (SQLite) and datetime object (Postgres)
+        if isinstance(iso_str, str):
+            dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        elif hasattr(iso_str, 'strftime'):
+            # Already a datetime object
+            dt = iso_str
+        else:
+            return str(iso_str)
+        
         return dt.strftime("%Y-%m-%d %H:%M:%S")
-    except (ValueError, AttributeError):
-        return iso_str
+    except (ValueError, AttributeError, TypeError):
+        return str(iso_str) if iso_str else "—"
 
 
 def format_duration(started: str | None, finished: str | None) -> str:
@@ -162,13 +170,26 @@ def format_duration(started: str | None, finished: str | None) -> str:
     if not started or not finished:
         return "—"
     try:
-        start_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
-        end_dt = datetime.fromisoformat(finished.replace("Z", "+00:00"))
+        # Handle both string (SQLite) and datetime object (Postgres)
+        if isinstance(started, str):
+            start_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+        elif hasattr(started, 'timestamp'):
+            start_dt = started
+        else:
+            return "—"
+        
+        if isinstance(finished, str):
+            end_dt = datetime.fromisoformat(finished.replace("Z", "+00:00"))
+        elif hasattr(finished, 'timestamp'):
+            end_dt = finished
+        else:
+            return "—"
+        
         duration = (end_dt - start_dt).total_seconds()
         if duration < 60:
             return f"{duration:.1f}s"
         return f"{duration / 60:.1f}m"
-    except (ValueError, AttributeError):
+    except (ValueError, AttributeError, TypeError):
         return "—"
 
 
