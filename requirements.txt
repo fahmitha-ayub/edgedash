@@ -1,12 +1,15 @@
-# Core dependencies
+# EdgeDash Dependencies
+# Pinned versions for reproducible deployments
+
+# Core
 pyyaml==6.0.2
 requests==2.32.3
 
-# LLM providers
+# LLM
 google-generativeai==0.8.3
 
-# Database
-psycopg2-binary==2.9.10
+# Database - using 2.9.9 for better Python 3.11+ wheel support
+psycopg2-binary==2.9.9
 
 # Dashboard
 streamlit==1.39.0
