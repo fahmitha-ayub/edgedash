@@ -194,12 +194,12 @@ def format_duration(started: str | None, finished: str | None) -> str:
 
 
 def verdict_emoji(verdict: str | None) -> str:
-    """Return emoji for verdict status."""
+    """Return status symbol for verdict."""
     if verdict == "pass":
-        return "✅"
+        return "PASS"
     elif verdict in ("fail", "degraded"):
-        return "❌"
-    return "⚪"
+        return "FAIL"
+    return "UNKNOWN"
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +216,7 @@ def render_header():
         all_cycles = safe_load_recent_cycles(limit=1)
         
         if not passing_cycle:
-            st.warning("⚠️ No verified cycles yet. Waiting for first orchestrator run.")
+            st.warning("No verified cycles yet. Waiting for first orchestrator run.")
             return
         
         # Check if newest cycle is passing
@@ -229,7 +229,7 @@ def render_header():
         
         if is_stale:
             st.error(
-                f"⚠️ **Latest cycle failed verification.** "
+                f"WARNING: Latest cycle failed verification. "
                 f"Data below is from an earlier verified cycle: "
                 f"{format_datetime(passing_cycle['finished_at'])}"
             )
@@ -250,7 +250,7 @@ def render_header():
             st.metric("Scored Listings", counts["scored"])
         
         with col4:
-            verdict_status = "✅ PASS" if passing_cycle.get("verdict") == "pass" else "❌ FAIL"
+            verdict_status = "PASS" if passing_cycle.get("verdict") == "pass" else "FAIL"
             st.metric("Current Status", verdict_status)
         
         st.divider()
@@ -320,7 +320,7 @@ def render_skill_gaps():
 
 def render_ask_section():
     """Render natural language query section (rules 42-45)."""
-    st.header("💬 Ask Your Data")
+    st.header("Ask Your Data")
     st.caption("Ask questions about job listings in plain English")
     
     try:
@@ -369,7 +369,7 @@ def render_ask_section():
                     
                     # Display metadata
                     if answer.tool_used:
-                        st.caption(f"📊 Tool used: `{answer.tool_used}` with params: `{answer.params}`")
+                        st.caption(f"Tool used: `{answer.tool_used}` with params: `{answer.params}`")
                     
                     # Display underlying data
                     if answer.rows:
@@ -387,93 +387,150 @@ def render_ask_section():
 
 def render_activity_log():
     """Render recent cycle activity log (main panel)."""
-    st.header("🔄 Agent Activity Log")
+    st.header("Agent Activity Log")
     st.caption("What the agent has been doing across its recent runs")
 
     try:
         cycles = safe_load_recent_cycles(limit=30)
 
         if not cycles:
-            st.info("💤 No cycles recorded yet. Run the orchestrator to populate data.")
+            st.info("No cycles recorded yet. Run the orchestrator to populate data.")
             return
 
-        # ---- Quick-scan summary, up top where job seekers will actually see it ----
+        # Quick-scan summary
         pass_count = sum(1 for c in cycles if c.get("verdict") == "pass")
         fail_count = sum(1 for c in cycles if c.get("verdict") == "fail")
         degraded_count = sum(1 for c in cycles if c.get("verdict") == "degraded")
         success_rate = (pass_count / len(cycles) * 100) if cycles else 0
 
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("✅ Passed", pass_count)
-        m2.metric("❌ Failed", fail_count)
-        m3.metric("⚠️ Degraded", degraded_count)
+        m1.metric("Passed", pass_count)
+        m2.metric("Failed", fail_count)
+        m3.metric("Degraded", degraded_count)
         m4.metric("Success Rate", f"{success_rate:.0f}%")
 
         st.caption(f"Showing the {len(cycles)} most recent cycles, newest first")
 
-        # ---- Build compact table data (same parsing as before) ----
+        # Build detailed table data with skip reasons and failure details
         rows = []
         for cycle in cycles:
             verdict = cycle.get("verdict", "unknown")
-            status_icon = verdict_emoji(verdict)
+            status_icon = "PASS" if verdict == "pass" else "FAIL" if verdict == "fail" else "DEGRADED" if verdict == "degraded" else "UNKNOWN"
 
             duration = format_duration(cycle.get("started_at"), cycle.get("finished_at"))
 
             notes = cycle.get("notes", "")
-            agents_run = []
-            agents_skipped = []
-
+            agents_info = []
+            
+            # Parse notes for agent activity and skip reasons
             if notes:
+                # Extract fetcher info
                 if "fetcher" in notes.lower():
                     if "skip" in notes.lower() and "fetcher" in notes.lower():
-                        agents_skipped.append("fetcher")
+                        # Try to extract skip reason
+                        if "hours_since_fetch" in notes:
+                            import re
+                            match = re.search(r'hours_since_fetch[=<>]+(\d+\.?\d*)', notes)
+                            if match:
+                                hours = match.group(1)
+                                agents_info.append(f"Fetcher (skipped: fetched {hours}h ago)")
+                            else:
+                                agents_info.append("Fetcher (skipped: recent data)")
+                        else:
+                            agents_info.append("Fetcher (skipped: recent data)")
                     else:
-                        agents_run.append("fetcher")
+                        agents_info.append("Fetcher")
+                
+                # Extract scorer info
                 if "scorer" in notes.lower():
                     if "skip" in notes.lower() and "scorer" in notes.lower():
-                        agents_skipped.append("scorer")
+                        if "unscored_count" in notes or "no unscored" in notes.lower():
+                            agents_info.append("Scorer (skipped: no new jobs)")
+                        else:
+                            agents_info.append("Scorer (skipped)")
                     else:
-                        agents_run.append("scorer")
+                        # Try to extract scored count
+                        import re
+                        match = re.search(r'scored (\d+)', notes)
+                        if match:
+                            count = match.group(1)
+                            agents_info.append(f"Scorer (scored {count})")
+                        else:
+                            agents_info.append("Scorer")
+                
+                # Extract gap_analyzer info
                 if "gap_analyzer" in notes.lower() or "gap" in notes.lower():
-                    if "skip" in notes.lower():
-                        agents_skipped.append("gaps")
+                    if "skip" in notes.lower() and "gap" in notes.lower():
+                        if "no scored" in notes.lower():
+                            agents_info.append("Gap Analyzer (skipped: no scored jobs)")
+                        else:
+                            agents_info.append("Gap Analyzer (skipped)")
                     else:
-                        agents_run.append("gaps")
+                        agents_info.append("Gap Analyzer")
 
-            summary = " + ".join(agents_run) if agents_run else "—"
-            if agents_skipped:
-                summary += f" (⏭ {', '.join(agents_skipped)})"
+            summary = " + ".join(agents_info) if agents_info else "No agents ran"
 
-            failed_reason = "—"
+            # Extract detailed failure reason
+            failed_reason = ""
             if verdict != "pass":
                 failed_checks = cycle.get("failed_checks", "")
                 if failed_checks:
-                    if "," in failed_checks:
-                        failed_reason = failed_checks.split(",")[0].strip()
+                    # Try to parse JSON if it's structured
+                    try:
+                        import json
+                        checks = json.loads(failed_checks)
+                        if isinstance(checks, list) and len(checks) > 0:
+                            check = checks[0]
+                            name = check.get("name", "unknown")
+                            observed = check.get("observed", "")
+                            threshold = check.get("threshold", "")
+                            message = check.get("message", "")
+                            
+                            # Build human-readable failure message
+                            if name == "gap_sample_size":
+                                failed_reason = f"Sample too small: {observed} jobs analyzed (need {threshold})"
+                            elif name == "spread":
+                                failed_reason = f"Score distribution issue: spread {observed} (expected {threshold})"
+                            elif name == "freshness":
+                                failed_reason = f"Data staleness: {message}"
+                            elif name == "score_count":
+                                failed_reason = f"Too few scores: {observed} (need {threshold})"
+                            else:
+                                failed_reason = f"{name}: {message if message else 'Check failed'}"
+                        else:
+                            failed_reason = str(failed_checks)
+                    except (json.JSONDecodeError, TypeError):
+                        # Not JSON, use as-is
+                        failed_reason = str(failed_checks)
+                else:
+                    # Check notes for failure hints
+                    if "retry" in notes.lower():
+                        failed_reason = "Verification failed after retry"
                     else:
-                        failed_reason = failed_checks
+                        failed_reason = "Quality check failed"
 
             rows.append({
-                "": status_icon,
+                "Status": status_icon,
                 "Time": format_datetime(cycle.get("started_at")),
                 "Agents": summary,
-                "Verdict": verdict.upper() if verdict else "—",
-                "Failure": failed_reason,
+                "Verdict": verdict.upper() if verdict else "UNKNOWN",
+                "Failure Details": failed_reason if failed_reason else "—",
                 "Duration": duration,
             })
 
         import pandas as pd
         df = pd.DataFrame(rows)
 
+        # Color code by verdict
         def highlight_verdict(row):
             if row["Verdict"] == "PASS":
-                return ['background-color: #000000'] * len(row)
+                return ['background-color: #d4edda; color: black'] * len(row)
             elif row["Verdict"] == "FAIL":
-                return ['background-color: #000000'] * len(row)
+                return ['background-color: #f8d7da; color: black'] * len(row)
             elif row["Verdict"] == "DEGRADED":
-                return ['background-color: #000000'] * len(row)
+                return ['background-color: #fff3cd; color: black'] * len(row)
             else:
-                return [''] * len(row)
+                return ['background-color: #f8f9fa; color: black'] * len(row)
 
         styled_df = df.style.apply(highlight_verdict, axis=1)
 
@@ -483,23 +540,27 @@ def render_activity_log():
             height=min(400 + (len(cycles) * 10), 650),
             hide_index=True,
             column_config={
-                "": st.column_config.TextColumn(width="small"),
+                "Status": st.column_config.TextColumn(width="small"),
                 "Time": st.column_config.TextColumn(width="medium"),
                 "Agents": st.column_config.TextColumn(width="large"),
                 "Verdict": st.column_config.TextColumn(width="small"),
-                "Failure": st.column_config.TextColumn(width="medium"),
+                "Failure Details": st.column_config.TextColumn(width="large"),
                 "Duration": st.column_config.TextColumn(width="small"),
             }
         )
 
-        # ---- Optional trend view, tucked away so it doesn't clutter the table ----
-        with st.expander("📈 See verdict trend across these cycles"):
+        # Optional trend view
+        with st.expander("See verdict trend across these cycles"):
             trend_df = pd.DataFrame({
-                "Cycle (oldest → newest)": list(range(1, len(cycles) + 1)),
+                "Cycle (oldest to newest)": list(range(1, len(cycles) + 1)),
                 "Passed": [1 if c.get("verdict") == "pass" else 0 for c in reversed(cycles)],
             })
-            st.bar_chart(trend_df.set_index("Cycle (oldest → newest)"), height=180)
+            st.bar_chart(trend_df.set_index("Cycle (oldest to newest)"), height=180)
             st.caption("Bar height of 1 = pass, 0 = fail/degraded.")
+
+    except Exception as e:
+        logger.error(f"Activity log render failed: {e}")
+        st.error("Unable to load activity log")
 
     except Exception as e:
         logger.error(f"Activity log render failed: {e}")
@@ -517,7 +578,7 @@ def render_footer():
             st.caption("by Rehours")
         
         with col2:
-            st.caption("🔗 [GitHub Repository](https://github.com/yourusername/edgedash)")
+            st.caption("[GitHub Repository](https://github.com/yourusername/edgedash)")
     
     except Exception as e:
         logger.error(f"Footer render failed: {e}")
@@ -530,13 +591,13 @@ def render_footer():
 def main():
     st.set_page_config(
         page_title="EdgeDash",
-        page_icon="📊",
+        page_icon="chart",
         layout="wide",
     )
     
     # Check initialization
     if not _init_success:
-        st.error(f"⚠️ Application initialization failed")
+        st.error(f"Application initialization failed")
         st.write(_init_error)
         st.info(
             "**Required configuration:**\n\n"
