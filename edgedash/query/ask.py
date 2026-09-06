@@ -13,9 +13,11 @@ Answer: namedtuple with text, rows, tool_used, params.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections import namedtuple
 from dataclasses import dataclass
+from datetime import datetime, date
 from typing import Any
 
 from edgedash import llm, storage
@@ -23,7 +25,24 @@ from edgedash.config import load_config
 from edgedash.query.tools import TOOLS
 
 
+logger = logging.getLogger(__name__)
 Answer = namedtuple("Answer", ["text", "rows", "tool_used", "params"])
+
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+
+def _serialize_for_json(obj: Any) -> Any:
+    """Convert datetime objects and other non-JSON-serializable types to strings."""
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    elif isinstance(obj, dict):
+        return {k: _serialize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_serialize_for_json(item) for item in obj]
+    else:
+        return obj
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +113,9 @@ def _build_phrasing_prompt(question: str, rows: list[dict], summary: str) -> str
     Per rule 43: Use ONLY numbers present in the rows. No estimation, no
     extrapolation, no outside context. If rows are empty, say so plainly.
     """
-    rows_json = json.dumps(rows, indent=2)
+    # Serialize datetime objects before JSON encoding
+    serialized_rows = _serialize_for_json(rows)
+    rows_json = json.dumps(serialized_rows, indent=2)
     
     return f"""You are writing a brief answer to a question about job listings data.
 
@@ -217,7 +238,10 @@ def ask(question: str, config: Any = None) -> Answer:
         )
     
     # Step 3: PHRASE (second LLM call)
-    phrasing_prompt = _build_phrasing_prompt(question, result.rows, result.summary)
+    # Serialize rows before passing to phrasing (handles datetime objects)
+    serialized_rows = _serialize_for_json(result.rows)
+    
+    phrasing_prompt = _build_phrasing_prompt(question, serialized_rows, result.summary)
     
     phrasing_schema = {
         "type": "object",
@@ -240,9 +264,10 @@ def ask(question: str, config: Any = None) -> Answer:
     duration = time.time() - start_time
     _log_query(question, tool_name, params, True, duration)
     
+    # Return with serialized rows for display
     return Answer(
         text=answer_text,
-        rows=result.rows,
+        rows=serialized_rows,
         tool_used=tool_name,
         params=params,
     )
