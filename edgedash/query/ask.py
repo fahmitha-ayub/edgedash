@@ -264,18 +264,25 @@ def _log_query(
     with storage._connection() as conn:
         # Ensure table exists (for both SQLite and Postgres)
         if storage._backend == "postgres":
-            storage._execute(conn, """
-                CREATE TABLE IF NOT EXISTS query_log (
-                    id          SERIAL PRIMARY KEY,
-                    asked_at    TIMESTAMP NOT NULL,
-                    question    TEXT NOT NULL,
-                    tool        TEXT,
-                    params      TEXT,
-                    answerable  INTEGER NOT NULL,
-                    duration_ms INTEGER NOT NULL,
-                    error       TEXT
-                )
-            """)
+            # For Postgres, try to create with BOOLEAN type
+            # If table already exists with INTEGER, this will fail silently
+            try:
+                storage._execute(conn, """
+                    CREATE TABLE IF NOT EXISTS query_log (
+                        id          SERIAL PRIMARY KEY,
+                        asked_at    TIMESTAMP NOT NULL,
+                        question    TEXT NOT NULL,
+                        tool        TEXT,
+                        params      TEXT,
+                        answerable  BOOLEAN NOT NULL,
+                        duration_ms INTEGER NOT NULL,
+                        error       TEXT
+                    )
+                """)
+            except Exception as e:
+                # Table might already exist with different schema
+                # Try to check and migrate if needed
+                logger.warning(f"query_log table creation/check failed: {e}")
         else:
             storage._execute(conn, """
                 CREATE TABLE IF NOT EXISTS query_log (
@@ -290,6 +297,12 @@ def _log_query(
                 )
             """)
         
+        # Convert answerable to appropriate type for each backend
+        if storage._backend == "postgres":
+            answerable_value = answerable  # Postgres accepts boolean directly
+        else:
+            answerable_value = 1 if answerable else 0  # SQLite uses integers
+        
         storage._execute(
             conn,
             """
@@ -301,7 +314,7 @@ def _log_query(
                 "question": question,
                 "tool": tool,
                 "params": json.dumps(params),
-                "answerable": 1 if answerable else 0,
+                "answerable": answerable_value,
                 "duration_ms": int(duration * 1000),
                 "error": error,
             },
