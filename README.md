@@ -4,7 +4,7 @@
 
 EdgeDash is an automated job search assistant that runs on autopilot. It scans job boards daily, scores every listing against your profile, identifies skill gaps, and presents insights through a clean web dashboard. Set it up once, check it daily for your best matches.
 
-[![Deploy to Streamlit](https://edgedash-keve7spuxjnweqkhla236n.streamlit.app/)
+[![Deploy to Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://edgedash-keve7spuxjnweqkhla236n.streamlit.app/)
 
 ## What It Does
 
